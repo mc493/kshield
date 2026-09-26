@@ -1,0 +1,13 @@
+[Unit]
+Description=Project Aegis-Kernel (UKDF) Soak & Drift Sentinel
+Documentation=https://github.com/aegis-kernel/kshield
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=kshield
+Group=kshield
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/local/bin/python3 /usr/local/lib/kshield/kshield_soak_monitor.py --sample
+StandardOutput=journal
+StandardError=journal

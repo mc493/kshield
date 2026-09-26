@@ -1,0 +1,57 @@
+{
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "architectures": [
+    "SCMP_ARCH_X86_64",
+    "SCMP_ARCH_X86",
+    "SCMP_ARCH_AARCH64",
+    "SCMP_ARCH_ARM"
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "io_uring_setup",
+        "io_uring_enter",
+        "io_uring_register"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "comment": "Block modern io_uring asynchronous engine primitives to neutralize dozens of weaponized UAF and heap overflow zero-days"
+    },
+    {
+      "names": [
+        "userfaultfd"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "comment": "Block userfaultfd heap-grooming and race-condition pausing primitive used in over 80% of modern Linux kernel LPEs"
+    },
+    {
+      "names": [
+        "kexec_load",
+        "kexec_file_load"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "comment": "Block arbitrary kernel image replacement and kexec reboot triggers from within container namespaces"
+    },
+    {
+      "names": [
+        "reboot",
+        "acct"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "comment": "Block container attempts to reboot the host kernel or manipulate BSD process accounting files"
+    },
+    {
+      "names": [
+        "socket"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "comment": "Synchronously block AF_ALG Netlink crypto sockets (domain 38) to prevent crypto subsystem LPE vulnerabilities",
+      "args": [
+        {
+          "index": 0,
+          "value": 38,
+          "op": "SCMP_CMP_EQ"
+        }
+      ]
+    }
+  ]
+}

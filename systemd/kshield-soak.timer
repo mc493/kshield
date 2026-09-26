@@ -1,0 +1,11 @@
+[Unit]
+Description=Project Aegis-Kernel (UKDF) Soak & Drift Sentinel Timer
+Documentation=https://github.com/aegis-kernel/kshield
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=kshield-soak.service
+
+[Install]
+WantedBy=timers.target
