@@ -1,0 +1,26 @@
+[Unit]
+Description=Project Aegis-Kernel (UKDF) WORM Vault Publisher Daemon
+Documentation=https://github.com/aegis-kernel/kshield
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kshield
+Group=kshield
+Environment=PYTHONUNBUFFERED=1
+Environment=NATS_URL=nats://127.0.0.1:4222
+Environment=KSHIELD_VAULT_PATH=/var/log/kshield/audit_chain.jsonl
+ExecStart=/usr/local/bin/python3 -u /usr/local/lib/kshield/kshield_publisher.py
+Restart=always
+RestartSec=5s
+
+# Hardening Directives
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log/kshield
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

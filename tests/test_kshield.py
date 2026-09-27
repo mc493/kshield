@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import hashlib
 import unittest
+import concurrent.futures
 from importlib.machinery import SourceFileLoader
 from importlib.util import spec_from_loader, module_from_spec
 
@@ -204,6 +205,33 @@ class TestLedgerIntegrity(unittest.TestCase):
         self.assertEqual(res["count"], 3)
         self.assertEqual(res["head_index"], 2)
         self.assertEqual(res["head_hash"], r2["hash"])
+
+    def test_concurrent_append_serialization(self):
+        """Verifies POSIX file locking serializes parallel writes with zero index collisions or chain forks."""
+        concurrent_vault = os.path.join(self.temp_dir, "concurrent_vault.jsonl")
+
+        def _worker(worker_id):
+            return kshield.KShieldLedger.append_record(
+                f"event.worker.{worker_id}",
+                {"worker": worker_id},
+                path=concurrent_vault
+            )
+
+        # 16 concurrent write tasks across 8 worker threads
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            records = list(executor.map(_worker, range(16)))
+
+        self.assertEqual(len(records), 16)
+        indices = [r["index"] for r in records]
+        # Verify strict uniqueness of indices (zero collisions)
+        self.assertEqual(len(set(indices)), 16)
+        self.assertEqual(set(indices), set(range(16)))
+
+        # Verify cryptographic chain over entire concurrent vault
+        res = kshield.KShieldLedger.verify_local_vault(concurrent_vault, full_scan=True)
+        self.assertTrue(res["valid"])
+        self.assertEqual(res["count"], 16)
+        self.assertEqual(res["head_index"], 15)
 
 
 class TestSnapshotAttestation(unittest.TestCase):

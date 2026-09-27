@@ -31,7 +31,7 @@ It implements high-efficacy compensating controls and exploit-path prevention ta
 └─────────────────────┴─────────────────────┴─────────────────────────────────┘
 ```
 
-1. **Zero-Dependency CLI (`kshield`):** Written purely using standard library Python and C-types libc wrappers. The core CLI requires zero third-party packages, zero compilation steps, and executes anywhere from a minimal container to an enterprise server. Includes both native ledger appending (`record-event`) and cryptographic verification (`verify-ledger`), while providing an optional distributed witness daemon with decoupled dependencies in `daemon/requirements.txt`.
+1. **Zero-Dependency CLI (`kshield`):** Written purely using standard library Python and C-types libc wrappers. The core CLI requires zero third-party packages, zero compilation steps, and executes anywhere from a minimal container to an enterprise server. Includes both native ledger appending with POSIX advisory file locking (`record-event` with `fcntl.flock`) and cryptographic verification (`verify-ledger`), while providing an optional distributed publisher/witness daemon pair with decoupled dependencies in `daemon/requirements.txt`.
 2. **Transactional Disarmament & Automated Watchdog:** Modifies kernel parameters and module loading tables with a fail-safe **60-second interactive watchdog**. If network connectivity, DNS resolution, or service health degrades during configuration, `kshield` automatically rolls back to a cryptographic snapshot.
 3. **Multi-Architecture Syscall Interception:** Enforces Seccomp filters at both container and host level, defanging exploit primitives across both **x86_64** and **ARM64 (aarch64)**.
 4. **Cross-Node Dual-Witness Notary:** Decouples logging into a primary WORM vault and an independent external witness notary. Neither node can rewrite, delete, or re-order historical logs without triggering an instant cryptographic consensus divergence alarm.
@@ -109,11 +109,23 @@ kshield verify-ledger --json | jq .consensus
 
 ### 6. Synchronous WORM Event Appender
 ```bash
-# Append an authenticated event to the local hash-chained ledger
+# Append an authenticated event to the local hash-chained ledger (serialized via fcntl.flock)
 kshield record-event --topic security.audit --data '{"status": "hardened", "profile": "container-host"}'
 
 # Verify immediate sequential integrity of the newly committed block
 kshield verify-ledger --full
+```
+
+### 7. Cross-Node Dual-Witness Streaming Bridge
+```bash
+# Primary Node: Forward newly committed blocks and 30s heartbeats to NATS
+sudo systemctl enable --now kshield-publisher
+
+# Secondary Notary Node: Ingest, independently verify, and commit blocks to witness vault
+sudo systemctl enable --now kshield-witness
+
+# Verify dual-witness lockstep consensus from any authorized terminal
+kshield verify-ledger --witness-host 192.0.2.10
 ```
 
 ---
@@ -175,11 +187,12 @@ In enterprise compliance environments (such as SEC Rule 17a-4 and FINRA 4511 aud
 
 $$H_n = \text{SHA-256}\Big(n \;\parallel\; t_n \;\parallel\; \text{topic} \;\parallel\; \text{Serialize}(\text{data}) \;\parallel\; H_{n-1}\Big)$$
 
-1. **Cryptographic Chaining:** Sequential SHA-256 hash chaining ensures that any modified, deleted, or inserted historical record invalidates all subsequent hashes.
+1. **Cryptographic Chaining & Concurrency Locking:** Sequential SHA-256 hash chaining ensures that any modified, deleted, or inserted historical record invalidates all subsequent hashes. POSIX advisory locks (`fcntl.flock`) serialize concurrent writes across parallel processes, preventing forked chains.
 2. **Synchronous Durability:** Explicit `fsync()` barriers bypass the kernel Page Cache and commit records to non-volatile storage.
-3. **Independent Dual-Witness Consensus:** An external witness notary independently verifies the hash sequence. Neither node can unilaterally rewrite history without causing an immediate consensus divergence alert.
-4. **Dead-Man Switch:** Emits a 30s heartbeat; alarms trip if either logger falls silent for $>60$ seconds.
-5. **Cascading Loop Protection:** Witness alerts are partitioned to an isolated topic with leaky-bucket rate limiting (60s cooldown) and a 200-block sliding reorder buffer.
+3. **Decoupled Streaming Publisher:** The primary host runs `daemon/kshield_publisher.py` (systemd unit `kshield-publisher.service`) to tail `/var/log/kshield/audit_chain.jsonl` and broadcast newly committed blocks to NATS topic `kshield.security.witness.block`.
+4. **Independent Dual-Witness Consensus:** An external witness notary (`daemon/kshield_witness.py`) independently verifies the hash sequence. Neither node can unilaterally rewrite history without causing an immediate consensus divergence alert.
+5. **Dead-Man Switch:** The publisher emits a 30s heartbeat to `kshield.security.heartbeat`; alarms trip if either logger falls silent for $>60$ seconds.
+6. **Cascading Loop Protection:** Witness alerts are partitioned to an isolated topic with leaky-bucket rate limiting (60s cooldown) and a 200-block sliding reorder buffer.
 
 > **Distinction Between Hash Chaining and Physical WORM Storage:**  
 > Cryptographic hash-chaining and dual-witness notarization provide high-assurance tamper-evidence and multi-party non-repudiation. While an adversary with full root access could attempt filesystem destruction, they cannot forge or rewrite historical records without detection by the witness. However, cryptographic chaining on standard filesystems is distinct from physical, regulatory-grade Write-Once-Read-Many (optical/hardware-enforced) storage.

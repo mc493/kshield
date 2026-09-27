@@ -28,6 +28,7 @@ import argparse
 import json
 import re
 import ctypes
+import fcntl
 from typing import Dict, List, Any, Tuple, Optional
 
 libc = ctypes.CDLL(None, use_errno=True)
@@ -435,7 +436,7 @@ class KShieldWatchdog:
             except Exception:
                 continue
 
-        # 2. Probe system configured nameservers from /etc/resolv.conf
+        # 2. Wire-level RFC 1035 UDP query probe against configured nameservers in /etc/resolv.conf
         if os.path.exists("/etc/resolv.conf"):
             nameservers = []
             try:
@@ -446,13 +447,17 @@ class KShieldWatchdog:
                             parts = line.split()
                             if len(parts) >= 2:
                                 nameservers.append(parts[1])
+                # Minimal RFC 1035 root zone query: 17 bytes (ID 0x7b5a, RD=1, QDCOUNT=1, QNAME=., QTYPE=A, QCLASS=IN)
+                dns_query = b"\x7b\x5a\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x01"
                 for ns in nameservers:
                     try:
                         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         s.settimeout(1.0)
-                        s.connect((ns, 53))
+                        s.sendto(dns_query, (ns, 53))
+                        resp, _ = s.recvfrom(512)
                         s.close()
-                        return (True, f"nameserver_reachable ({ns})") if detailed else True
+                        if len(resp) >= 12 and resp[:2] == b"\x7b\x5a":
+                            return (True, f"nameserver_verified ({ns})") if detailed else True
                     except Exception:
                         pass
             except Exception:
@@ -1199,62 +1204,68 @@ class KShieldLedger:
 
     @classmethod
     def append_record(cls, topic: str, data: Any, path: str = DEFAULT_VAULT_PATH) -> Dict[str, Any]:
-        """Atomically appends an attested, SHA-256 hash-chained record to the WORM ledger file."""
+        """Atomically appends an attested, SHA-256 hash-chained record to the WORM ledger file with POSIX advisory locking."""
         vault_dir = os.path.dirname(os.path.abspath(path))
         if vault_dir:
             os.makedirs(vault_dir, exist_ok=True)
 
-        next_index = 0
-        prev_hash = "0" * 64
+        lock_path = path + ".lock"
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                next_index = 0
+                prev_hash = "0" * 64
 
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            file_size = os.path.getsize(path)
-            with open(path, "rb") as f:
-                try:
-                    if file_size > 65536:
-                        f.seek(-65536, os.SEEK_END)
-                        f.readline()  # discard potential partial line
-                    else:
-                        f.seek(0)
-                except OSError:
-                    f.seek(0)
-                lines = f.read().decode("utf-8", errors="ignore").strip().splitlines()
-                if lines:
-                    last_line = lines[-1].strip()
-                    if last_line:
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    file_size = os.path.getsize(path)
+                    with open(path, "rb") as f:
                         try:
-                            last_rec = json.loads(last_line)
-                            next_index = int(last_rec.get("index", 0)) + 1
-                            prev_hash = str(last_rec.get("hash", "0" * 64))
-                        except Exception:
-                            pass
+                            if file_size > 65536:
+                                f.seek(-65536, os.SEEK_END)
+                                f.readline()  # discard potential partial line
+                            else:
+                                f.seek(0)
+                        except OSError:
+                            f.seek(0)
+                        lines = f.read().decode("utf-8", errors="ignore").strip().splitlines()
+                        if lines:
+                            last_line = lines[-1].strip()
+                            if last_line:
+                                try:
+                                    last_rec = json.loads(last_line)
+                                    next_index = int(last_rec.get("index", 0)) + 1
+                                    prev_hash = str(last_rec.get("hash", "0" * 64))
+                                except Exception:
+                                    pass
 
-        timestamp = time.time()
-        rec_hash = cls.compute_hash(next_index, timestamp, topic, data, prev_hash)
-        record = {
-            "index": next_index,
-            "timestamp": timestamp,
-            "topic": topic,
-            "data": data,
-            "prev_hash": prev_hash,
-            "hash": rec_hash
-        }
+                timestamp = time.time()
+                rec_hash = cls.compute_hash(next_index, timestamp, topic, data, prev_hash)
+                record = {
+                    "index": next_index,
+                    "timestamp": timestamp,
+                    "topic": topic,
+                    "data": data,
+                    "prev_hash": prev_hash,
+                    "hash": rec_hash
+                }
 
-        line = json.dumps(record) + "\n"
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(line)
-            f.flush()
-            os.fsync(f.fileno())
+                line = json.dumps(record) + "\n"
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(line)
+                    f.flush()
+                    os.fsync(f.fileno())
 
-        return {
-            "success": True,
-            "index": next_index,
-            "timestamp": timestamp,
-            "topic": topic,
-            "hash": rec_hash,
-            "prev_hash": prev_hash,
-            "vault_path": path
-        }
+                return {
+                    "success": True,
+                    "index": next_index,
+                    "timestamp": timestamp,
+                    "topic": topic,
+                    "hash": rec_hash,
+                    "prev_hash": prev_hash,
+                    "vault_path": path
+                }
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     @classmethod
     def verify_local_vault(cls, path: str = DEFAULT_VAULT_PATH, full_scan: bool = False) -> Dict[str, Any]:

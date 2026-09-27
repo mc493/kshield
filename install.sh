@@ -46,6 +46,7 @@ echo "  [OK] Installed ${BIN_DIR}/kshield"
 echo "[INFO] Installing daemon modules to ${LIB_DIR}..."
 mkdir -p "${LIB_DIR}"
 install -m 755 "${SCRIPT_DIR}/daemon/kshield_witness.py" "${LIB_DIR}/kshield_witness.py"
+install -m 755 "${SCRIPT_DIR}/daemon/kshield_publisher.py" "${LIB_DIR}/kshield_publisher.py"
 install -m 755 "${SCRIPT_DIR}/daemon/kshield_soak_monitor.py" "${LIB_DIR}/kshield_soak_monitor.py"
 if [ -f "${SCRIPT_DIR}/daemon/requirements.txt" ]; then
   install -m 644 "${SCRIPT_DIR}/daemon/requirements.txt" "${LIB_DIR}/requirements.txt"
