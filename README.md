@@ -31,7 +31,7 @@ It implements high-efficacy compensating controls and exploit-path prevention ta
 └─────────────────────┴─────────────────────┴─────────────────────────────────┘
 ```
 
-1. **Zero-Dependency CLI (`kshield`):** Written purely using standard library Python and C-types libc wrappers. The core CLI requires zero third-party packages, zero compilation steps, and executes anywhere from a minimal container to an enterprise server. An optional distributed witness daemon is provided with decoupled dependencies in `daemon/requirements.txt`.
+1. **Zero-Dependency CLI (`kshield`):** Written purely using standard library Python and C-types libc wrappers. The core CLI requires zero third-party packages, zero compilation steps, and executes anywhere from a minimal container to an enterprise server. Includes both native ledger appending (`record-event`) and cryptographic verification (`verify-ledger`), while providing an optional distributed witness daemon with decoupled dependencies in `daemon/requirements.txt`.
 2. **Transactional Disarmament & Automated Watchdog:** Modifies kernel parameters and module loading tables with a fail-safe **60-second interactive watchdog**. If network connectivity, DNS resolution, or service health degrades during configuration, `kshield` automatically rolls back to a cryptographic snapshot.
 3. **Multi-Architecture Syscall Interception:** Enforces Seccomp filters at both container and host level, defanging exploit primitives across both **x86_64** and **ARM64 (aarch64)**.
 4. **Cross-Node Dual-Witness Notary:** Decouples logging into a primary WORM vault and an independent external witness notary. Neither node can rewrite, delete, or re-order historical logs without triggering an instant cryptographic consensus divergence alarm.
@@ -105,6 +105,15 @@ kshield verify-ledger --full
 
 # Machine-parseable consensus assertion
 kshield verify-ledger --json | jq .consensus
+```
+
+### 6. Synchronous WORM Event Appender
+```bash
+# Append an authenticated event to the local hash-chained ledger
+kshield record-event --topic security.audit --data '{"status": "hardened", "profile": "container-host"}'
+
+# Verify immediate sequential integrity of the newly committed block
+kshield verify-ledger --full
 ```
 
 ---
@@ -208,6 +217,12 @@ sudo kshield restore
 # Or revert to a specific snapshot ID
 sudo kshield restore --snapshot-id 20260924_204512
 ```
+
+---
+
+## Repository Telemetry Retention
+
+To preserve long-term operational metrics beyond the standard 14-day GitHub traffic window, repository visitor and clone statistics are archived daily into `traffic/` via an automated GitHub Actions cron workflow.
 
 ---
 

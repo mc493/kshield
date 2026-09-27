@@ -183,6 +183,28 @@ class TestLedgerIntegrity(unittest.TestCase):
         self.assertFalse(res["valid"])
         self.assertIn("error", res)
 
+    def test_append_record_lifecycle(self):
+        """Verifies native append_record creates valid hash-chained entries from scratch."""
+        test_vault = os.path.join(self.temp_dir, "native_appended.jsonl")
+
+        r0 = kshield.KShieldLedger.append_record("system.boot", {"status": "start"}, path=test_vault)
+        self.assertEqual(r0["index"], 0)
+        self.assertEqual(r0["prev_hash"], "0" * 64)
+
+        r1 = kshield.KShieldLedger.append_record("security.audit", {"score": 90}, path=test_vault)
+        self.assertEqual(r1["index"], 1)
+        self.assertEqual(r1["prev_hash"], r0["hash"])
+
+        r2 = kshield.KShieldLedger.append_record("security.disarm", {"profile": "container-host"}, path=test_vault)
+        self.assertEqual(r2["index"], 2)
+        self.assertEqual(r2["prev_hash"], r1["hash"])
+
+        res = kshield.KShieldLedger.verify_local_vault(test_vault, full_scan=True)
+        self.assertTrue(res["valid"])
+        self.assertEqual(res["count"], 3)
+        self.assertEqual(res["head_index"], 2)
+        self.assertEqual(res["head_hash"], r2["hash"])
+
 
 class TestSnapshotAttestation(unittest.TestCase):
     """Validates transactional recovery snapshot creation and SHA-256 digest validation."""
@@ -302,6 +324,35 @@ class TestCliParsing(unittest.TestCase):
         args = self.parser.parse_args(["install-seccomp", "--source", "/tmp/custom-profile.json"])
         self.assertEqual(args.command, "install-seccomp")
         self.assertEqual(args.source, "/tmp/custom-profile.json")
+
+    def test_record_event_command(self):
+        """Verifies record-event parses required topic and data flags."""
+        args = self.parser.parse_args(["record-event", "--topic", "sec.alert", "--data", '{"level": "high"}'])
+        self.assertEqual(args.command, "record-event")
+        self.assertEqual(args.topic, "sec.alert")
+        self.assertEqual(args.data, '{"level": "high"}')
+
+
+class TestWatchdogNetwork(unittest.TestCase):
+    """Validates watchdog Layer 4 link probes and DNS resolution fallbacks."""
+
+    def test_socket_creation(self):
+        """Verifies standard socket creation succeeds without restriction."""
+        self.assertTrue(kshield.KShieldWatchdog.check_socket_creation())
+
+    def test_dns_resolution_interface(self):
+        """Verifies DNS check returns boolean and detailed status."""
+        ok = kshield.KShieldWatchdog.check_dns_resolution(detailed=False)
+        self.assertIsInstance(ok, bool)
+
+        ok_det, status = kshield.KShieldWatchdog.check_dns_resolution(detailed=True)
+        self.assertIsInstance(ok_det, bool)
+        self.assertIsInstance(status, str)
+
+    def test_gateway_reachability_no_icmp(self):
+        """Verifies gateway reachability executes Layer 4 / routing table fallback when ICMP is disabled."""
+        gw_ok = kshield.KShieldWatchdog.check_gateway_reachability(no_icmp=True)
+        self.assertIsInstance(gw_ok, bool)
 
 
 if __name__ == "__main__":

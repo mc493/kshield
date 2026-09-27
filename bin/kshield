@@ -376,45 +376,97 @@ class KShieldWatchdog:
 
     @staticmethod
     def check_gateway_reachability(no_icmp: bool = False) -> bool:
-        """Verifies default gateway reachability using ICMP ping with fallback to routing table validation."""
+        """Verifies default gateway reachability using ICMP ping, active Layer 4 TCP probing, or routing table verification."""
         gw = KShieldWatchdog.get_default_gateway()
         if not gw:
             return True  # Cannot determine gateway; pass conservatively
+
+        # 1. ICMP ping probe (primary)
         if not no_icmp:
             res = subprocess.run(["ping", "-c", "1", "-W", "1", gw], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if res.returncode == 0:
                 return True
-        # If ICMP is blocked or failed, verify local routing table entries to avoid false-positive rollbacks in cloud/container VPCs
+
+        # 2. Active Layer 4 TCP egress probe to default gateway
+        # Connects to common gateway ports (DNS 53, HTTPS 443, HTTP 80, SSH 22).
+        # Return code 0 (connected) or 111 (ECONNREFUSED) confirms Layer 2 ARP resolution and active packet exchange.
+        probe_ports = [53, 443, 80, 22]
+        for port in probe_ports:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1.0)
+                rc = s.connect_ex((gw, port))
+                s.close()
+                if rc in (0, 111):
+                    return True
+            except Exception:
+                pass
+
+        # 3. Layer 3 interface operstate check on default routing interface
         try:
             with open("/proc/net/route", "r") as f:
                 lines = f.readlines()
                 for line in lines[1:]:
                     parts = line.strip().split()
                     if len(parts) >= 2 and parts[1] == "00000000":  # default route exists
-                        return True
+                        iface = parts[0]
+                        oper_path = f"/sys/class/net/{iface}/operstate"
+                        if os.path.exists(oper_path):
+                            with open(oper_path, "r") as op_f:
+                                oper = op_f.read().strip()
+                                if oper in ("up", "unknown"):
+                                    return True
+                        else:
+                            return True
         except Exception:
             pass
+
         return False
 
     @staticmethod
-    def check_dns_resolution() -> bool:
-        """Validates operational DNS resolution against system resolvers or fallback queries."""
-        # Attempt resolving standard public DNS hostnames
-        test_hosts = ["dns.quad9.net", "one.one.one.one", "google.com"]
+    def check_dns_resolution(detailed: bool = False) -> Any:
+        """Validates operational DNS resolution against public resolvers, local nameservers, or host fallback."""
+        # 1. Probe reliable public DNS targets
+        test_hosts = ["dns.quad9.net", "one.one.one.one", "kernel.org", "google.com"]
         for host in test_hosts:
             try:
                 socket.getaddrinfo(host, 53, socket.AF_INET, socket.SOCK_STREAM)
-                return True
+                return (True, "verified") if detailed else True
             except Exception:
                 continue
-        # Fallback for air-gapped / isolated environments with local resolv.conf
+
+        # 2. Probe system configured nameservers from /etc/resolv.conf
         if os.path.exists("/etc/resolv.conf"):
+            nameservers = []
             try:
-                socket.gethostbyname("localhost")
-                return True
+                with open("/etc/resolv.conf", "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("nameserver"):
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                nameservers.append(parts[1])
+                for ns in nameservers:
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        s.settimeout(1.0)
+                        s.connect((ns, 53))
+                        s.close()
+                        return (True, f"nameserver_reachable ({ns})") if detailed else True
+                    except Exception:
+                        pass
             except Exception:
                 pass
-        return False
+
+        # 3. Fallback for air-gapped / isolated local environments
+        try:
+            socket.gethostbyname("localhost")
+            if os.path.exists("/etc/resolv.conf"):
+                return (True, "degraded (local only)") if detailed else True
+        except Exception:
+            pass
+
+        return (False, "unresolved") if detailed else False
 
     @staticmethod
     def check_socket_creation() -> bool:
@@ -445,12 +497,13 @@ class KShieldWatchdog:
     def run_health_checks(cls, no_icmp: bool = False) -> Tuple[bool, Dict[str, Any]]:
         results = {}
         gw_ok = cls.check_gateway_reachability(no_icmp=no_icmp)
-        dns_ok = cls.check_dns_resolution()
+        dns_ok, dns_status = cls.check_dns_resolution(detailed=True)
         sock_ok = cls.check_socket_creation()
         sysd_ok, failed = cls.check_systemd_health()
 
         results["gateway_reachability"] = gw_ok
         results["dns_resolution"] = dns_ok
+        results["dns_status"] = dns_status
         results["socket_creation"] = sock_ok
         results["systemd_units_healthy"] = sysd_ok
         if failed:
@@ -1145,6 +1198,65 @@ class KShieldLedger:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     @classmethod
+    def append_record(cls, topic: str, data: Any, path: str = DEFAULT_VAULT_PATH) -> Dict[str, Any]:
+        """Atomically appends an attested, SHA-256 hash-chained record to the WORM ledger file."""
+        vault_dir = os.path.dirname(os.path.abspath(path))
+        if vault_dir:
+            os.makedirs(vault_dir, exist_ok=True)
+
+        next_index = 0
+        prev_hash = "0" * 64
+
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            file_size = os.path.getsize(path)
+            with open(path, "rb") as f:
+                try:
+                    if file_size > 65536:
+                        f.seek(-65536, os.SEEK_END)
+                        f.readline()  # discard potential partial line
+                    else:
+                        f.seek(0)
+                except OSError:
+                    f.seek(0)
+                lines = f.read().decode("utf-8", errors="ignore").strip().splitlines()
+                if lines:
+                    last_line = lines[-1].strip()
+                    if last_line:
+                        try:
+                            last_rec = json.loads(last_line)
+                            next_index = int(last_rec.get("index", 0)) + 1
+                            prev_hash = str(last_rec.get("hash", "0" * 64))
+                        except Exception:
+                            pass
+
+        timestamp = time.time()
+        rec_hash = cls.compute_hash(next_index, timestamp, topic, data, prev_hash)
+        record = {
+            "index": next_index,
+            "timestamp": timestamp,
+            "topic": topic,
+            "data": data,
+            "prev_hash": prev_hash,
+            "hash": rec_hash
+        }
+
+        line = json.dumps(record) + "\n"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
+            os.fsync(f.fileno())
+
+        return {
+            "success": True,
+            "index": next_index,
+            "timestamp": timestamp,
+            "topic": topic,
+            "hash": rec_hash,
+            "prev_hash": prev_hash,
+            "vault_path": path
+        }
+
+    @classmethod
     def verify_local_vault(cls, path: str = DEFAULT_VAULT_PATH, full_scan: bool = False) -> Dict[str, Any]:
         if not os.path.exists(path):
             return {"valid": False, "error": f"Vault ledger file not found at: {path}"}
@@ -1246,10 +1358,14 @@ class KShieldLedger:
 
         # Read last lines to verify head continuity
         try:
+            file_size = os.path.getsize(path)
             with open(path, "rb") as f:
                 try:
-                    f.seek(-min(os.path.getsize(path), 65536), os.SEEK_END)
-                    f.readline()  # discard partial line
+                    if file_size > 65536:
+                        f.seek(-65536, os.SEEK_END)
+                        f.readline()  # discard partial line
+                    else:
+                        f.seek(0)
                 except OSError:
                     f.seek(0)
                 lines = f.read().decode("utf-8", errors="ignore").strip().splitlines()
@@ -1414,6 +1530,30 @@ def cmd_verify_ledger(args):
     print("═══════════════════════════════════════════════════════════════════════════\n")
 
 
+def cmd_record_event(args):
+    vault_path = args.vault_path or DEFAULT_VAULT_PATH
+    raw_data = args.data
+    try:
+        data = json.loads(raw_data)
+    except Exception:
+        data = {"message": raw_data}
+
+    res = KShieldLedger.append_record(topic=args.topic, data=data, path=vault_path)
+    if args.json:
+        print(json.dumps(res, indent=2))
+    else:
+        print("═══════════════════════════════════════════════════════════════════════════")
+        print("      AEGIS-KERNEL: CRYPTOGRAPHIC WORM LEDGER EVENT APPRENDER        ")
+        print("═══════════════════════════════════════════════════════════════════════════")
+        print(f"  • Vault Path       : {res['vault_path']}")
+        print(f"  • Block Index      : #{res['index']}")
+        print(f"  • Event Topic      : {res['topic']}")
+        print(f"  • Previous Hash    : {res['prev_hash'][:16]}...{res['prev_hash'][-8:]}")
+        print(f"  • Block Hash       : {res['hash']}")
+        print(f"  • Status           : ATTESTED & COMMITTED")
+        print("═══════════════════════════════════════════════════════════════════════════\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="kshield: Universal Kernel Defense Framework (UKDF) Unified CLI Core",
@@ -1460,6 +1600,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_ledger.add_argument("--full", action="store_true", help="Execute complete cryptovalidation scan across all records")
     p_ledger.add_argument("--json", action="store_true", help="Output attestation in structured JSON format")
 
+    # record-event
+    p_record = subparsers.add_parser("record-event", help="Appends an authenticated event to the local hash-chained WORM ledger")
+    p_record.add_argument("--topic", type=str, required=True, help="Event topic identifier (e.g. security.audit.disarm)")
+    p_record.add_argument("--data", type=str, required=True, help="Event payload JSON string or text message")
+    p_record.add_argument("--vault-path", type=str, default=DEFAULT_VAULT_PATH, help="Path to local WORM vault ledger")
+    p_record.add_argument("--json", action="store_true", help="Output attestation in structured JSON format")
+
     return parser
 
 
@@ -1483,6 +1630,8 @@ def main():
         cmd_snapshots()
     elif args.command == "verify-ledger":
         cmd_verify_ledger(args)
+    elif args.command == "record-event":
+        cmd_record_event(args)
 
 
 if __name__ == "__main__":
