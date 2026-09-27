@@ -1,5 +1,5 @@
-# Project Aegis-Kernel (`kshield`)
-### Zero-Downtime Linux Kernel Attack Surface Hardening, Seccomp Sandboxing & Cryptographic Dual-Witness WORM Defense
+# UKDF: Universal Kernel Defense Framework (`kshield`)
+### Zero-Downtime Linux Attack Surface Hardening, Seccomp Sandboxing & Cryptographic Dual-Witness WORM Defense
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE)
 [![Architecture: x86_64 | aarch64](https://img.shields.io/badge/Architecture-x86__64%20%7C%20aarch64-green.svg?style=flat-square)](#)
@@ -8,13 +8,13 @@
 [![Engineered With: Antigravity CLI](https://img.shields.io/badge/Engineered%20With-Antigravity%20CLI%20(agy)-black?style=flat-square)](https://github.com/)
 [![Views](https://hits.sh/github.com/mc493/kshield.svg?style=flat-square&label=views)](traffic/SUMMARY.md)
 
-**Project Aegis-Kernel (`kshield`)** is an enterprise-grade, zero-dependency Linux defense framework engineered to systematically eliminate exploitable kernel attack surfaces without requiring kernel recompilations, reboots, or production service downtime.
+The **Universal Kernel Defense Framework (UKDF)** is an enterprise systems defense architecture engineered to systematically eliminate exploitable Linux kernel attack surfaces without requiring kernel recompilations, reboots, or production service downtime.
 
-It implements high-efficacy compensating controls and exploit-path prevention targeting primitives associated with **CVE-2024-1086** (Netfilter double-free), **CVE-2022-2602** (io_uring privilege escalation), **CVE-2022-0185** (fsopen heap overflow), **CVE-2022-2588** (route4 use-after-free), and **CVE-2023-32233** (Netfilter nf_tables UAF), while maintaining a **cryptographically chained, independently witnessed append-only audit ledger**.
+**`kshield`** is the zero-dependency reference implementation and unified CLI for the UKDF specification. It implements high-efficacy compensating controls and exploit-path prevention targeting primitives associated with **CVE-2024-1086** (Netfilter double-free), **CVE-2022-2602** (io_uring privilege escalation), **CVE-2022-0185** (fsopen heap overflow), **CVE-2022-2588** (route4 use-after-free), and **CVE-2023-32233** (Netfilter nf_tables UAF), while maintaining a **cryptographically chained, independently witnessed append-only audit ledger**.
 
 > [!NOTE]
 > **Architectural & Research Disambiguation:**  
-> Project Aegis-Kernel (`kshield`) is an independent systems engineering and host-hardening framework designed for Day-0 compensating controls, Seccomp sandboxing, and append-only cryptographic WORM notarization. It has no affiliation or architectural connection with prior academic research papers or academic defense prototypes that utilize similar terminology or acronyms (such as academic eBPF runtime defense papers titled *kShield*). Project Aegis-Kernel explicitly operates without in-kernel eBPF instrumentation, relying instead on deterministic syscall gating, modprobe loader sealing, and standard-library POSIX cryptographic chaining.
+> The Universal Kernel Defense Framework (UKDF) and its reference engine `kshield` represent an independent systems engineering architecture designed for Day-0 compensating controls, Seccomp sandboxing, and append-only cryptographic WORM notarization. It has no affiliation or architectural connection with prior academic research papers or academic defense prototypes that utilize similar terminology or acronyms (such as academic eBPF runtime defense papers titled *kShield*). UKDF explicitly operates without in-kernel eBPF instrumentation, relying instead on deterministic syscall gating, modprobe loader sealing, and standard-library POSIX cryptographic chaining.
 
 ---
 
@@ -22,7 +22,8 @@ It implements high-efficacy compensating controls and exploit-path prevention ta
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                       PROJECT AEGIS-KERNEL ARCHITECTURE                     │
+│                 UNIVERSAL KERNEL DEFENSE FRAMEWORK (UKDF)                   │
+│                   Reference Engine & Unified CLI: kshield                   │
 ├─────────────────────┬─────────────────────┬─────────────────────────────────┤
 │ 1. Attack Surface   │ 2. Targeted Seccomp │ 3. Cryptographic Dual-Witness   │
 │    Audit & Disarm   │    Exploit Gating   │    Append-Only Ledger           │
@@ -48,7 +49,7 @@ A fundamental tenet of production systems engineering is **defense-in-depth** ac
 
 **Utilizing official commercial livepatching and kernel maintenance services provided by major enterprise distributions is strongly recommended wherever available.** Upstream kernel engineering teams do exceptional, vital work backporting complex C patches and maintaining certified kernel stability across production fleets.
 
-Project Aegis-Kernel (`kshield`) operates as a **complementary, zero-dependency defense layer** functioning at the syscall and module boundary:
+The Universal Kernel Defense Framework (implemented via `kshield`) operates as a **complementary, zero-dependency defense layer** functioning at the syscall and module boundary:
 
 1. **The Interim Disclosure Horizon:**  
    As highlighted in recent cybersecurity advisories (such as CISA's September 2026 *Quality Era Framework*, noting over 67,000 CVEs published in 2026 alone), the speed of automated exploit discovery creates an inevitable operational interval between zero-day weaponization and the arrival of compiled, signed binary updates. `kshield` acts as an immediate Day-0 compensating control to hold the line during that initial window.
@@ -134,9 +135,9 @@ kshield verify-ledger --witness-host 192.0.2.10
 
 ---
 
-## Threat Mitigation Taxonomy & CVE Mapping
+## UKDF Threat Mitigation Taxonomy & CVE Mapping
 
-To maintain technical precision and prevent over-claiming, Project Aegis-Kernel classifies controls into three distinct security tiers:
+To maintain technical precision and prevent over-claiming, the Universal Kernel Defense Framework classifies controls into three distinct security tiers:
 * **Category A (Vulnerability Remediation):** Upstream vendor kernel patch replacing vulnerable C code (official distributor updates).
 * **Category B (Exploit-Path Prevention):** Architectural gating (Seccomp syscall filters, unprivileged user namespace restrictions, and modprobe loader redirection) that severs or disables required prerequisites for exploitation.
 * **Category C (Exploit-Chain Hardening):** Information-leak restriction and diagnostic shielding that denies attackers KASLR slide offsets or object addresses, increasing exploitation complexity without altering underlying memory bugs.
@@ -290,4 +291,4 @@ To preserve long-term operational metrics beyond the standard 14-day GitHub traf
 
 ## License
 
-Project Aegis-Kernel is licensed under the **Apache License 2.0**.
+The Universal Kernel Defense Framework (UKDF) and `kshield` are licensed under the **Apache License 2.0**.
