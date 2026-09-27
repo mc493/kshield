@@ -1,0 +1,51 @@
+name: CI Test & Hardening Validation Suite
+
+on:
+  push:
+    branches:
+      - main
+      - 'draft/**'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Test Suite (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Validate Shell Script Syntax
+        run: |
+          bash -n install.sh
+
+      - name: Validate JSON Profiles
+        run: |
+          python3 -c "import json, glob; [json.load(open(f)) for f in glob.glob('profiles/*.json')]"
+
+      - name: Validate Python Bytecode Compilation
+        run: |
+          python3 -m compileall bin/ tests/ daemon/
+
+      - name: Execute Standard Library Test Suite
+        run: |
+          python3 -m unittest discover -s tests -v
+
+      - name: Execute CLI Smoke Tests
+        run: |
+          python3 bin/kshield status
+          python3 bin/kshield audit --json
+          python3 bin/kshield disarm --dry-run --profile container-host
+          python3 bin/kshield disarm --dry-run --profile strict-host

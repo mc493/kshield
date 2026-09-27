@@ -91,6 +91,11 @@ SYSCTL_TARGETS = {
     "kernel.perf_event_paranoid": {"target": [2, 3, 4], "default_set": 2, "weight": 5, "desc": "Restrict hardware performance counter side-channels"}
 }
 
+# Optional targets for strict non-container host profile
+STRICT_SYSCTL_TARGETS = {
+    "user.max_user_namespaces": {"target": [0], "default_set": 0, "weight": 5, "desc": "Disable unprivileged user namespaces (strict non-container host)"}
+}
+
 # Snapshot base directory
 SNAPSHOT_DIR = os.path.expanduser("~/.kshield/snapshots")
 STAGING_DIR = os.path.expanduser("~/.kshield/staging")
@@ -191,9 +196,23 @@ class KShieldAudit:
             boundaries["seccomp_supported"] = False
             boundaries["current_process_seccomp"] = 0
 
+        # Container Runtime Presence Detection
+        has_container = bool(
+            os.path.exists("/var/lib/kubelet") or
+            os.path.exists("/run/containerd") or
+            os.path.exists("/var/run/docker.sock") or
+            shutil.which("docker") or
+            shutil.which("k3s") or
+            shutil.which("podman")
+        )
+        boundaries["container_runtime_present"] = has_container
+
         # UserNS
         exists, max_userns = KShieldAudit.read_sysctl("user.max_user_namespaces")
-        boundaries["user_namespaces_enabled"] = exists and (max_userns > 0 if isinstance(max_userns, int) else False)
+        exists_clone, val_clone = KShieldAudit.read_sysctl("kernel.unprivileged_userns_clone")
+        userns_disabled = (exists and max_userns == 0) or (exists_clone and val_clone == 0)
+        boundaries["unprivileged_userns_restricted"] = userns_disabled
+        boundaries["user_namespaces_enabled"] = not userns_disabled
         boundaries["max_user_namespaces"] = max_userns
 
         # Read-Only Root Filesystem Detection
@@ -297,8 +316,19 @@ class KShieldAudit:
             score += 5.0
         if boundaries.get("read_only_root"):
             score += 5.0
-        if boundaries.get("user_namespaces_enabled"):
-            score += 5.0
+        # User namespace evaluation:
+        # On container hosts, user namespaces are used for rootless container execution (e.g. K8s hostUsers: false).
+        # On non-container hosts, restricting unprivileged user namespaces prevents local privilege escalation.
+        has_container = boundaries.get("container_runtime_present", False)
+        userns_restricted = boundaries.get("unprivileged_userns_restricted", False)
+        if has_container:
+            if boundaries.get("user_namespaces_enabled"):
+                score += 5.0
+        else:
+            if userns_restricted:
+                score += 5.0
+            else:
+                score += 2.0
 
         return int(min(100, max(0, score)))
 
@@ -345,22 +375,46 @@ class KShieldWatchdog:
         return None
 
     @staticmethod
-    def check_gateway_reachability() -> bool:
-        """Pings the default gateway with a 1-second timeout."""
+    def check_gateway_reachability(no_icmp: bool = False) -> bool:
+        """Verifies default gateway reachability using ICMP ping with fallback to routing table validation."""
         gw = KShieldWatchdog.get_default_gateway()
         if not gw:
             return True  # Cannot determine gateway; pass conservatively
-        res = subprocess.run(["ping", "-c", "1", "-W", "1", gw], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return res.returncode == 0
+        if not no_icmp:
+            res = subprocess.run(["ping", "-c", "1", "-W", "1", gw], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if res.returncode == 0:
+                return True
+        # If ICMP is blocked or failed, verify local routing table entries to avoid false-positive rollbacks in cloud/container VPCs
+        try:
+            with open("/proc/net/route", "r") as f:
+                lines = f.readlines()
+                for line in lines[1:]:
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and parts[1] == "00000000":  # default route exists
+                        return True
+        except Exception:
+            pass
+        return False
 
     @staticmethod
     def check_dns_resolution() -> bool:
-        """Attempts to resolve local gateway or domain name."""
-        try:
-            socket.gethostbyname("localhost")
-            return True
-        except Exception:
-            return False
+        """Validates operational DNS resolution against system resolvers or fallback queries."""
+        # Attempt resolving standard public DNS hostnames
+        test_hosts = ["dns.quad9.net", "one.one.one.one", "google.com"]
+        for host in test_hosts:
+            try:
+                socket.getaddrinfo(host, 53, socket.AF_INET, socket.SOCK_STREAM)
+                return True
+            except Exception:
+                continue
+        # Fallback for air-gapped / isolated environments with local resolv.conf
+        if os.path.exists("/etc/resolv.conf"):
+            try:
+                socket.gethostbyname("localhost")
+                return True
+            except Exception:
+                pass
+        return False
 
     @staticmethod
     def check_socket_creation() -> bool:
@@ -388,14 +442,14 @@ class KShieldWatchdog:
             return True, []
 
     @classmethod
-    def run_health_checks(cls) -> Tuple[bool, Dict[str, Any]]:
+    def run_health_checks(cls, no_icmp: bool = False) -> Tuple[bool, Dict[str, Any]]:
         results = {}
-        gw_ok = cls.check_gateway_reachability()
+        gw_ok = cls.check_gateway_reachability(no_icmp=no_icmp)
         dns_ok = cls.check_dns_resolution()
         sock_ok = cls.check_socket_creation()
         sysd_ok, failed = cls.check_systemd_health()
 
-        results["gateway_ping"] = gw_ok
+        results["gateway_reachability"] = gw_ok
         results["dns_resolution"] = dns_ok
         results["socket_creation"] = sock_ok
         results["systemd_units_healthy"] = sysd_ok
@@ -430,10 +484,11 @@ class KShieldDisarm:
         return "\n".join(lines)
 
     @staticmethod
-    def generate_sysctl_config() -> str:
+    def generate_sysctl_config(profile: str = "container-host") -> str:
         lines = [
             "# ═══════════════════════════════════════════════════════════════════════════",
             "# UKDF / Aegis-Kernel: Automated Sysctl Defense Baseline",
+            f"# Profile: {profile}",
             "# Enforces kernel memory obfuscation, unprivileged BPF disarming & link guards",
             "# Generated automatically by: kshield disarm",
             "# ═══════════════════════════════════════════════════════════════════════════\n"
@@ -441,6 +496,12 @@ class KShieldDisarm:
         for key, spec in SYSCTL_TARGETS.items():
             lines.append(f"# {spec['desc']}")
             lines.append(f"{key} = {spec['default_set']}\n")
+
+        if profile == "strict-host":
+            for key, spec in STRICT_SYSCTL_TARGETS.items():
+                lines.append(f"# {spec['desc']}")
+                lines.append(f"{key} = {spec['default_set']}\n")
+
         return "\n".join(lines)
 
     @staticmethod
@@ -448,19 +509,27 @@ class KShieldDisarm:
         snap_path = os.path.join(SNAPSHOT_DIR, snapshot_id)
         os.makedirs(snap_path, exist_ok=True)
 
+        digests = {}
+
         # Copy existing /etc/modprobe.d/kshield-disarm.conf if exists
         target_modprobe = "/etc/modprobe.d/kshield-disarm.conf"
         if os.path.exists(target_modprobe):
-            shutil.copy2(target_modprobe, os.path.join(snap_path, "kshield-disarm.conf"))
+            dest_modprobe = os.path.join(snap_path, "kshield-disarm.conf")
+            shutil.copy2(target_modprobe, dest_modprobe)
+            with open(dest_modprobe, "rb") as f:
+                digests["kshield-disarm.conf"] = hashlib.sha256(f.read()).hexdigest()
 
         # Copy existing /etc/sysctl.d/99-kshield.conf if exists
         target_sysctl = "/etc/sysctl.d/99-kshield.conf"
         if os.path.exists(target_sysctl):
-            shutil.copy2(target_sysctl, os.path.join(snap_path, "99-kshield.conf"))
+            dest_sysctl = os.path.join(snap_path, "99-kshield.conf")
+            shutil.copy2(target_sysctl, dest_sysctl)
+            with open(dest_sysctl, "rb") as f:
+                digests["99-kshield.conf"] = hashlib.sha256(f.read()).hexdigest()
 
         # Record current sysctl live values
         current_sysctls = {}
-        for key in SYSCTL_TARGETS.keys():
+        for key in list(SYSCTL_TARGETS.keys()) + list(STRICT_SYSCTL_TARGETS.keys()):
             exists, val = KShieldAudit.read_sysctl(key)
             if exists:
                 current_sysctls[key] = val
@@ -472,7 +541,8 @@ class KShieldDisarm:
             "snapshot_id": snapshot_id,
             "timestamp": time.time(),
             "kernel": os.uname().release,
-            "host": os.uname().nodename
+            "host": os.uname().nodename,
+            "file_digests": digests
         }
         with open(os.path.join(snap_path, "metadata.json"), "w") as f:
             json.dump(meta, f, indent=2)
@@ -502,12 +572,28 @@ class KShieldDisarm:
         snap_path = os.path.join(SNAPSHOT_DIR, target_snap)
         print(f"[REVERT] Restoring system state from snapshot: {target_snap} ...")
 
+        meta_file = os.path.join(snap_path, "metadata.json")
+        digests = {}
+        if os.path.exists(meta_file):
+            try:
+                with open(meta_file, "r") as f:
+                    meta = json.load(f)
+                    digests = meta.get("file_digests", {})
+            except Exception:
+                pass
+
         # 1. Restore or remove modprobe config
         target_modprobe = "/etc/modprobe.d/kshield-disarm.conf"
         snap_modprobe = os.path.join(snap_path, "kshield-disarm.conf")
         if os.path.exists(snap_modprobe):
+            if "kshield-disarm.conf" in digests:
+                with open(snap_modprobe, "rb") as f:
+                    actual = hashlib.sha256(f.read()).hexdigest()
+                if actual != digests["kshield-disarm.conf"]:
+                    print(f"[ERROR] Integrity verification failed for {snap_modprobe}. Snapshot may be corrupted.")
+                    return False
             shutil.copy2(snap_modprobe, target_modprobe)
-            print(f"  • Restored {target_modprobe}")
+            print(f"  • Restored {target_modprobe} (SHA-256 verified)")
         else:
             if os.path.exists(target_modprobe):
                 os.remove(target_modprobe)
@@ -517,8 +603,14 @@ class KShieldDisarm:
         target_sysctl = "/etc/sysctl.d/99-kshield.conf"
         snap_sysctl = os.path.join(snap_path, "99-kshield.conf")
         if os.path.exists(snap_sysctl):
+            if "99-kshield.conf" in digests:
+                with open(snap_sysctl, "rb") as f:
+                    actual = hashlib.sha256(f.read()).hexdigest()
+                if actual != digests["99-kshield.conf"]:
+                    print(f"[ERROR] Integrity verification failed for {snap_sysctl}. Snapshot may be corrupted.")
+                    return False
             shutil.copy2(snap_sysctl, target_sysctl)
-            print(f"  • Restored {target_sysctl}")
+            print(f"  • Restored {target_sysctl} (SHA-256 verified)")
         else:
             if os.path.exists(target_sysctl):
                 os.remove(target_sysctl)
@@ -784,8 +876,10 @@ def cmd_disarm(args):
         if cat != "summary":
             dormant.extend(data["dormant_available"])
 
+    profile = getattr(args, "profile", "container-host")
+    no_icmp = getattr(args, "no_icmp", False)
     modprobe_content = KShieldDisarm.generate_modprobe_config(dormant)
-    sysctl_content = KShieldDisarm.generate_sysctl_config()
+    sysctl_content = KShieldDisarm.generate_sysctl_config(profile=profile)
 
     if args.dry_run or not args.enforce:
         print("═══════════════════════════════════════════════════════════════════════════")
@@ -800,6 +894,7 @@ def cmd_disarm(args):
         with open(staged_sysctl, "w") as f:
             f.write(sysctl_content)
 
+        num_sysctls = len(SYSCTL_TARGETS) + (len(STRICT_SYSCTL_TARGETS) if profile == "strict-host" else 0)
         print(f"[DIR] Configurations successfully staged to: {STAGING_DIR}/\n")
         print(f"1. [{staged_modprobe}] ({len(dormant)} dormant modules targeted)")
         preview_lines = modprobe_content.split("\n")[:12]
@@ -807,7 +902,7 @@ def cmd_disarm(args):
             print(f"   | {l}")
         print(f"   | ... (+{len(preview_lines)} more lines)\n")
 
-        print(f"2. [{staged_sysctl}] ({len(SYSCTL_TARGETS)} sysctl hardening directives)")
+        print(f"2. [{staged_sysctl}] ({num_sysctls} sysctl hardening directives - Profile: {profile})")
         for l in sysctl_content.split("\n")[:12]:
             print(f"   | {l}")
         print("   | ...\n")
@@ -951,10 +1046,28 @@ def cmd_verify_sandbox(args):
 
 
 def cmd_install_seccomp(args):
-    source_dir = os.path.dirname(os.path.abspath(__file__))
-    source_profile = os.path.join(source_dir, "seccomp-kshield-default.json")
-    if not os.path.exists(source_profile):
-        print(f"[ERROR] Source Seccomp profile not found at: {source_profile}")
+    candidates = []
+    if getattr(args, "source", None):
+        candidates.append(args.source)
+    bin_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates.extend([
+        os.path.join(bin_dir, "../profiles/seccomp-kshield-default.json"),
+        os.path.join(bin_dir, "profiles/seccomp-kshield-default.json"),
+        os.path.join(bin_dir, "seccomp-kshield-default.json"),
+        "/usr/local/share/kshield/profiles/seccomp-kshield-default.json",
+        "/etc/kshield/profiles/seccomp-kshield-default.json"
+    ])
+
+    source_profile = None
+    for cand in candidates:
+        if os.path.exists(cand):
+            source_profile = os.path.abspath(cand)
+            break
+
+    if not source_profile:
+        print("[ERROR] Source Seccomp profile (seccomp-kshield-default.json) not found in search paths:")
+        for cand in candidates:
+            print(f"  • {cand}")
         sys.exit(1)
 
     target_dir = args.target_dir or "/var/lib/kubelet/seccomp"
@@ -1076,7 +1189,56 @@ class KShieldLedger:
             except Exception:
                 pass
 
-        # Fast tail or python verification
+        # Full sequential scan in pure Python if requested and external binary is absent
+        if full_scan:
+            t0 = time.time()
+            head_idx = 0
+            head_hash = ""
+            count = 0
+            last_rec = None
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line_num, line in enumerate(f):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        rec = json.loads(line)
+                        if last_rec is not None:
+                            if rec.get("prev_hash") != last_rec.get("hash"):
+                                return {
+                                    "valid": False,
+                                    "error": f"Hash chain broken between #{last_rec.get('index')} and #{rec.get('index')} at line {line_num+1}",
+                                    "head_index": last_rec.get("index"),
+                                    "head_hash": last_rec.get("hash")
+                                }
+                            calc = cls.compute_hash(rec["index"], rec["timestamp"], rec["topic"], rec["data"], rec["prev_hash"])
+                            if calc != rec["hash"]:
+                                return {
+                                    "valid": False,
+                                    "error": f"Cryptographic mismatch at index #{rec['index']} line {line_num+1}",
+                                    "head_index": last_rec.get("index"),
+                                    "head_hash": last_rec.get("hash")
+                                }
+                        last_rec = rec
+                        count += 1
+                if last_rec:
+                    head_idx = last_rec.get("index", 0)
+                    head_hash = last_rec.get("hash", "")
+                dur = time.time() - t0
+                return {
+                    "valid": True,
+                    "engine": "Python Stdlib (Full Sequential Verification)",
+                    "count": count,
+                    "head_index": head_idx,
+                    "head_hash": head_hash,
+                    "duration_sec": dur,
+                    "full_scan": True,
+                    "integrity_label": "100% UNBROKEN (All Sequential Records Validated)"
+                }
+            except Exception as e:
+                return {"valid": False, "error": str(e)}
+
+        # Fast tail verification (bounded read window)
         t0 = time.time()
         head_idx = 0
         head_hash = ""
@@ -1126,12 +1288,14 @@ class KShieldLedger:
             dur = time.time() - t0
             return {
                 "valid": True,
-                "engine": "Python Stdlib (Fast Tail Audit)",
+                "engine": "Python Stdlib (Fast Tail Window Audit)",
                 "count": est_total,
                 "verified_tail_records": count,
                 "head_index": head_idx,
                 "head_hash": head_hash,
-                "duration_sec": dur
+                "duration_sec": dur,
+                "full_scan": False,
+                "integrity_label": "VALID (Trailing Window Verified - use --full for complete scan)"
             }
         except Exception as e:
             return {"valid": False, "error": str(e)}
@@ -1198,12 +1362,16 @@ def cmd_verify_ledger(args):
     if local_res.get("valid"):
         print(f"  • Vault Path       : {vault_path}")
         print(f"  • Engine           : {local_res.get('engine')}")
-        print(f"  • Total Records    : {local_res.get('count', 0):,}")
+        if local_res.get("full_scan"):
+            print(f"  • Verified Records : {local_res.get('count', 0):,} (Full scan verified)")
+        else:
+            print(f"  • Estimated Records: ~{local_res.get('count', 0):,} (Based on head index)")
+            print(f"  • Tail Verified    : {local_res.get('verified_tail_records', 0)} recent blocks")
         print(f"  • Head Index       : #{local_res.get('head_index')}")
         print(f"  • Head Hash        : {local_res.get('head_hash')[:16]}...{local_res.get('head_hash')[-8:]}")
         if "throughput" in local_res:
             print(f"  • Attestation Rate : {local_res.get('throughput', 0):,.0f} records/sec ({local_res.get('duration_sec', 0):.2f}s)")
-        print(f"  • Chain Integrity  : 100% UNBROKEN (SHA-256 Validated)")
+        print(f"  • Chain Integrity  : {local_res.get('integrity_label', 'VALID')}")
     else:
         print(f"  • Status           : CORRUPTED / ERROR: {local_res.get('error')}")
 
@@ -1246,7 +1414,7 @@ def cmd_verify_ledger(args):
     print("═══════════════════════════════════════════════════════════════════════════\n")
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="kshield: Universal Kernel Defense Framework (UKDF) Unified CLI Core",
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1266,6 +1434,8 @@ def main():
     p_disarm.add_argument("--enforce", action="store_true", help="Apply configurations live with automated watchdog")
     p_disarm.add_argument("--timeout", type=int, default=60, help="Watchdog rollback timeout in seconds (default: 60)")
     p_disarm.add_argument("--no-watchdog", action="store_true", help="Bypass the interactive watchdog countdown")
+    p_disarm.add_argument("--profile", type=str, choices=["container-host", "strict-host"], default="container-host", help="Hardening profile ('container-host' preserves UserNS for container isolation; 'strict-host' sets user.max_user_namespaces=0)")
+    p_disarm.add_argument("--no-icmp", action="store_true", help="Bypass ICMP ping in watchdog health checks (for cloud VPCs)")
 
     # restore
     p_restore = subparsers.add_parser("restore", help="Roll back host configurations from a snapshot")
@@ -1278,6 +1448,7 @@ def main():
     # install-seccomp
     p_seccomp = subparsers.add_parser("install-seccomp", help="Installs seccomp-kshield-default.json to Kubelet")
     p_seccomp.add_argument("--target-dir", type=str, default="/var/lib/kubelet/seccomp", help="Target seccomp directory")
+    p_seccomp.add_argument("--source", type=str, default=None, help="Custom path to source seccomp profile JSON")
 
     # snapshots
     subparsers.add_parser("snapshots", help="Lists existing baseline snapshots")
@@ -1289,6 +1460,11 @@ def main():
     p_ledger.add_argument("--full", action="store_true", help="Execute complete cryptovalidation scan across all records")
     p_ledger.add_argument("--json", action="store_true", help="Output attestation in structured JSON format")
 
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.command == "status":

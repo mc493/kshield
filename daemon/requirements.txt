@@ -1,0 +1,2 @@
+# Optional dependencies for distributed witness notary daemon
+nats-py>=2.6.0

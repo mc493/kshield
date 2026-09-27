@@ -10,8 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${PREFIX:-/usr/local}"
 BIN_DIR="${PREFIX}/bin"
 LIB_DIR="${PREFIX}/lib/kshield"
+SHARE_DIR="${PREFIX}/share/kshield/profiles"
 SYSCONF_DIR="/etc"
-SECONMP_DIR="/var/lib/kubelet/seccomp"
+SECCOMP_DIR="/var/lib/kubelet/seccomp"
 
 echo "═══════════════════════════════════════════════════════════════════════════"
 echo "      [AEGIS-KERNEL]  PROJECT AEGIS-KERNEL (UKDF) UNIVERSAL SYSTEM INSTALLER          "
@@ -41,19 +42,26 @@ mkdir -p "${BIN_DIR}"
 install -m 755 "${SCRIPT_DIR}/bin/kshield" "${BIN_DIR}/kshield"
 echo "  [OK] Installed ${BIN_DIR}/kshield"
 
-# 2. Install Daemons and Libraries
+# 2. Install Daemons, Libraries and System Profiles
 echo "[INFO] Installing daemon modules to ${LIB_DIR}..."
 mkdir -p "${LIB_DIR}"
 install -m 755 "${SCRIPT_DIR}/daemon/kshield_witness.py" "${LIB_DIR}/kshield_witness.py"
 install -m 755 "${SCRIPT_DIR}/daemon/kshield_soak_monitor.py" "${LIB_DIR}/kshield_soak_monitor.py"
+if [ -f "${SCRIPT_DIR}/daemon/requirements.txt" ]; then
+  install -m 644 "${SCRIPT_DIR}/daemon/requirements.txt" "${LIB_DIR}/requirements.txt"
+fi
 echo "  [OK] Installed daemon modules"
+
+mkdir -p "${SHARE_DIR}"
+install -m 644 "${SCRIPT_DIR}/profiles/seccomp-kshield-default.json" "${SHARE_DIR}/seccomp-kshield-default.json"
+echo "  [OK] Installed system profile to ${SHARE_DIR}/seccomp-kshield-default.json"
 
 # 3. Install Seccomp Profile (if Kubelet or Docker/containerd present)
 if [ -d "/var/lib/kubelet" ] || command -v kubelet >/dev/null 2>&1 || command -v k3s >/dev/null 2>&1; then
   echo "[INFO] Detected Kubernetes / K3s environment. Installing Seccomp profile..."
-  mkdir -p "${SECONMP_DIR}"
-  install -m 644 "${SCRIPT_DIR}/profiles/seccomp-kshield-default.json" "${SECONMP_DIR}/seccomp-kshield-default.json"
-  echo "  [OK] Installed Seccomp profile to ${SECONMP_DIR}/seccomp-kshield-default.json"
+  mkdir -p "${SECCOMP_DIR}"
+  install -m 644 "${SCRIPT_DIR}/profiles/seccomp-kshield-default.json" "${SECCOMP_DIR}/seccomp-kshield-default.json"
+  echo "  [OK] Installed Seccomp profile to ${SECCOMP_DIR}/seccomp-kshield-default.json"
 fi
 
 # 4. Optional Systemd Unit Templates

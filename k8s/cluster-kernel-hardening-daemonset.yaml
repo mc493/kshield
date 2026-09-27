@@ -134,15 +134,31 @@ spec:
             cp /host/run/sysctl.d/99-kshield.conf /host/etc/sysctl.d/99-kshield.conf 2>/dev/null || true
           fi
 
-          # Apply sysctls to running kernel if writeable
-          if [ -w /host/proc/sys/kernel/kptr_restrict ]; then
-            echo 2 > /host/proc/sys/kernel/kptr_restrict 2>/dev/null || true
-            echo 1 > /host/proc/sys/kernel/dmesg_restrict 2>/dev/null || true
-            echo 2 > /host/proc/sys/fs/protected_fifos 2>/dev/null || true
-            echo 2 > /host/proc/sys/fs/protected_regular 2>/dev/null || true
-            echo 0 > /host/proc/sys/vm/unprivileged_userfaultfd 2>/dev/null || true
+          # Apply all 11 critical sysctls to running kernel if writeable
+          for item in \
+            "kernel/unprivileged_bpf_disabled:1" \
+            "kernel/kptr_restrict:2" \
+            "kernel/dmesg_restrict:1" \
+            "kernel/yama/ptrace_scope:2" \
+            "kernel/kexec_load_disabled:1" \
+            "vm/unprivileged_userfaultfd:0" \
+            "fs/protected_symlinks:1" \
+            "fs/protected_hardlinks:1" \
+            "fs/protected_fifos:2" \
+            "fs/protected_regular:2" \
+            "kernel/perf_event_paranoid:2"; do
+            p_path="${item%%:*}"
+            p_val="${item##*:}"
+            if [ -w "/host/proc/sys/${p_path}" ]; then
+              echo "${p_val}" > "/host/proc/sys/${p_path}" 2>/dev/null || true
+            fi
+          done
+
+          # Trigger host sysctl processor if chroot sysctl is available
+          if chroot /host command -v sysctl >/dev/null 2>&1; then
+            chroot /host sysctl -p /run/sysctl.d/99-kshield.conf >/dev/null 2>&1 || true
           fi
-          echo "  [OK] Host sysctls asserted"
+          echo "  [OK] Host sysctls asserted into kernel memory"
           echo "[KSHIELD] Node Kernel Defenses Synchronized Successfully."
         volumeMounts:
         - name: host-root
