@@ -1,0 +1,22 @@
+# Project Aegis-Kernel (kshield) - Standalone Benchmark Container
+# Multi-architecture container definition for non-destructive exploit gating verification and latency micro-benchmarks.
+
+FROM python:3.12-slim
+
+WORKDIR /workspace
+
+# Install minimal system tools (procps for /proc inspections)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install CLI binary and profile definitions
+COPY bin/kshield /usr/local/bin/kshield
+COPY profiles/ /usr/local/share/kshield/profiles/
+COPY profiles/seccomp-kshield-default.json /workspace/seccomp-kshield-default.json
+
+RUN chmod 755 /usr/local/bin/kshield
+
+# Default execution: run exploit probing and 100,000-cycle latency micro-benchmark
+ENTRYPOINT ["/usr/local/bin/kshield"]
+CMD ["verify-sandbox", "--iterations", "100000"]

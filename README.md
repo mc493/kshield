@@ -12,6 +12,10 @@
 
 It implements high-efficacy compensating controls and exploit-path prevention targeting primitives associated with **CVE-2024-1086** (Netfilter double-free), **CVE-2022-2602** (io_uring privilege escalation), **CVE-2022-0185** (fsopen heap overflow), **CVE-2022-2588** (route4 use-after-free), and **CVE-2023-32233** (Netfilter nf_tables UAF), while maintaining a **cryptographically chained, independently witnessed append-only audit ledger**.
 
+> [!NOTE]
+> **Architectural & Research Disambiguation:**  
+> Project Aegis-Kernel (`kshield`) is an independent systems engineering and host-hardening framework designed for Day-0 compensating controls, Seccomp sandboxing, and append-only cryptographic WORM notarization. It has no affiliation or architectural connection with prior academic research papers or academic defense prototypes that utilize similar terminology or acronyms (such as academic eBPF runtime defense papers titled *kShield*). Project Aegis-Kernel explicitly operates without in-kernel eBPF instrumentation, relying instead on deterministic syscall gating, modprobe loader sealing, and standard-library POSIX cryptographic chaining.
+
 ---
 
 ## Key Architectural Pillars
@@ -171,6 +175,22 @@ Tested, benchmarked, and continuously attested across production multi-architect
 > This asserts that configured Seccomp boundaries and sysctl gates are functioning as specified. It is not an assertion of generic immunity against all possible kernel vulnerabilities.
 > High-throughput attestation benchmarks (70,000+ records/sec) reflect reference enterprise deployments backed by asynchronous compiled storage daemons. The standalone Python standard-library implementation executes cryptographic ledger verification with sub-millisecond per-block latency (~770,000 syscall evaluation cycles/sec per core).
 
+### Reproducing the Benchmark Harness
+
+To independently reproduce exploit-gating assertions and measure syscall latency on any target machine, a turnkey benchmark harness is provided:
+
+```bash
+# Option A: Standalone Containerized Benchmark (Docker / Podman with Seccomp Profile)
+./scripts/reproduce-benchmark.sh
+
+# Or invoke directly via Docker:
+docker build -t kshield-benchmark -f docker/Dockerfile.benchmark .
+docker run --rm --security-opt seccomp=profiles/seccomp-kshield-default.json kshield-benchmark
+
+# Option B: Local Host-Level Execution
+./bin/kshield verify-sandbox --iterations 100000
+```
+
 ### Continuous 44-Hour Soak Sentinel Record
 Recorded autonomously via `kshield_soak_monitor.py` under systemd timer `kshield-soak.timer` (5-minute polling interval):
 * **Observation Window:** 44.36 continuous hours (447 telemetry samples)
@@ -230,6 +250,28 @@ sudo kshield restore
 # Or revert to a specific snapshot ID
 sudo kshield restore --snapshot-id 20260924_204512
 ```
+
+---
+
+## Automated Test Suite & Verification Matrix
+
+The repository includes a comprehensive 28-test verification suite with zero external dependencies, validating all core sub-engines:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+| Test Class | Focus & Verification Guarantees |
+| :--- | :--- |
+| `TestSysctlConfiguration` | Asserts baseline parameter generation across `container-host` and `strict-host` profiles. |
+| `TestModprobeConfiguration` | Validates `/bin/true` loader redirections and module blacklisting logic. |
+| `TestPostureScoring` | Verifies score boundary clamping [0, 100], calculation math, and deduction weights. |
+| `TestSeccompProfileIntegrity` | Asserts JSON schema validity, default allow policy (`SCMP_ACT_ALLOW`), and blocked syscall filtering (`AF_ALG`, `io_uring_*`, `userfaultfd`, `kexec_load`). |
+| `TestLedgerIntegrity` | Validates WORM SHA-256 sequential hash chaining, POSIX advisory file locking concurrency across parallel threads, and tamper detection. |
+| `TestPublisherBridge` | Validates bounded $O(1)$ tail-seeking, at-least-once read offset backpressure upon transport drops, and retry resilience. |
+| `TestWatchdogNetwork` | Tests RFC 1035 wire-level DNS query checks, TCP L4 gateway probing, and socket creation. |
+| `TestBenchmarkHarness` | Validates the existence, structural integrity, and execution permissions of Dockerfile and shell reproduction harnesses. |
+| `TestCliParsing` | Validates CLI argument structures, defaults, and subcommand flag parsing. |
 
 ---
 

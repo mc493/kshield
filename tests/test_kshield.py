@@ -502,5 +502,34 @@ class TestPublisherBridge(unittest.TestCase):
         self.assertEqual(pub.total_published, 2)
 
 
+class TestBenchmarkHarness(unittest.TestCase):
+    """Verifies standalone benchmark harness assets and scripts exist and are structurally valid."""
+
+    def setUp(self):
+        self.repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.dockerfile = os.path.join(self.repo_root, "docker", "Dockerfile.benchmark")
+        self.script = os.path.join(self.repo_root, "scripts", "reproduce-benchmark.sh")
+
+    def test_dockerfile_benchmark_exists_and_valid(self):
+        """Verifies Dockerfile.benchmark exists and configures verify-sandbox execution."""
+        self.assertTrue(os.path.isfile(self.dockerfile), f"Missing {self.dockerfile}")
+        with open(self.dockerfile, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("verify-sandbox", content)
+        self.assertIn("seccomp-kshield-default.json", content)
+        self.assertIn("ENTRYPOINT", content)
+
+    def test_reproduce_benchmark_script_executable_and_valid(self):
+        """Verifies reproduce-benchmark.sh exists, is executable, and contains seccomp flags."""
+        self.assertTrue(os.path.isfile(self.script), f"Missing {self.script}")
+        self.assertTrue(os.access(self.script, os.X_OK), f"{self.script} is not executable")
+        with open(self.script, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("--security-opt", content)
+        self.assertIn("seccomp-kshield-default.json", content)
+        self.assertIn("verify-sandbox", content)
+
+
 if __name__ == "__main__":
     unittest.main()
+
