@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import hashlib
 import unittest
+import asyncio
 import concurrent.futures
 from importlib.machinery import SourceFileLoader
 from importlib.util import spec_from_loader, module_from_spec
@@ -26,6 +27,13 @@ loader = SourceFileLoader("kshield", KSHIELD_PATH)
 spec = spec_from_loader("kshield", loader)
 kshield = module_from_spec(spec)
 loader.exec_module(kshield)
+
+# Dynamically import daemon/kshield_publisher.py
+PUBLISHER_PATH = os.path.join(REPO_ROOT, "daemon", "kshield_publisher.py")
+pub_loader = SourceFileLoader("kshield_publisher", PUBLISHER_PATH)
+pub_spec = spec_from_loader("kshield_publisher", pub_loader)
+kshield_publisher = module_from_spec(pub_spec)
+pub_loader.exec_module(kshield_publisher)
 
 
 class TestSysctlConfiguration(unittest.TestCase):
@@ -381,6 +389,117 @@ class TestWatchdogNetwork(unittest.TestCase):
         """Verifies gateway reachability executes Layer 4 / routing table fallback when ICMP is disabled."""
         gw_ok = kshield.KShieldWatchdog.check_gateway_reachability(no_icmp=True)
         self.assertIsInstance(gw_ok, bool)
+
+
+class TestPublisherBridge(unittest.TestCase):
+    """Validates publisher daemon tail-seek efficiency, offset backpressure, and at-least-once semantics."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="kshield_pub_test_")
+        self.vault_file = os.path.join(self.test_dir, "audit_chain.jsonl")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_sync_tail_empty_and_missing(self):
+        """Verifies tail sync handles absent and empty ledger files gracefully."""
+        pub = kshield_publisher.KShieldPublisher(vault_path=self.vault_file)
+        pub._sync_tail_position()
+        self.assertEqual(pub.file_pos, 0)
+        self.assertEqual(pub.last_index, 0)
+
+        # Create empty file
+        with open(self.vault_file, "w") as f:
+            pass
+        pub._sync_tail_position()
+        self.assertEqual(pub.file_pos, 0)
+        self.assertEqual(pub.last_index, 0)
+
+    def test_sync_tail_bounded_window(self):
+        """Verifies O(1) tail sync correctly determines head index and file offset without reading full ledger."""
+        for i in range(5):
+            kshield.KShieldLedger.append_record("sys.event", {"seq": i}, path=self.vault_file)
+
+        file_size = os.path.getsize(self.vault_file)
+        pub = kshield_publisher.KShieldPublisher(vault_path=self.vault_file)
+        pub._sync_tail_position()
+
+        self.assertEqual(pub.file_pos, file_size)
+        self.assertEqual(pub.last_index, 4)
+        self.assertEqual(len(pub.last_hash), 64)
+
+    def test_backpressure_on_disconnected_nats(self):
+        """Verifies publisher halts offset progression when NATS transport is absent or severed."""
+        kshield.KShieldLedger.append_record("sys.event", {"data": "test"}, path=self.vault_file)
+        pub = kshield_publisher.KShieldPublisher(vault_path=self.vault_file)
+        pub.file_pos = 0
+        pub.nc = None
+        pub.running = True
+
+        async def run_one_cycle():
+            task = asyncio.create_task(pub.tail_ledger_loop())
+            await asyncio.sleep(0.05)
+            pub.running = False
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(run_one_cycle())
+        # Offset must NOT advance when disconnected
+        self.assertEqual(pub.file_pos, 0)
+        self.assertEqual(pub.total_published, 0)
+
+    def test_publish_success_and_backpressure_retry(self):
+        """Verifies successful publishing advances offset, while publish failures hold offset for retry."""
+        kshield.KShieldLedger.append_record("sys.event", {"item": 1}, path=self.vault_file)
+        kshield.KShieldLedger.append_record("sys.event", {"item": 2}, path=self.vault_file)
+
+        pub = kshield_publisher.KShieldPublisher(vault_path=self.vault_file)
+        pub.file_pos = 0
+        pub.running = True
+
+        published_messages = []
+
+        class MockNcSuccess:
+            is_connected = True
+            async def publish(self, topic, payload):
+                published_messages.append((topic, payload))
+
+        pub.nc = MockNcSuccess()
+
+        async def run_publisher():
+            task = asyncio.create_task(pub.tail_ledger_loop())
+            await asyncio.sleep(0.05)
+            pub.running = False
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(run_publisher())
+        self.assertEqual(len(published_messages), 2)
+        self.assertEqual(pub.total_published, 2)
+        self.assertEqual(pub.file_pos, os.path.getsize(self.vault_file))
+
+        # Now append a third record and simulate a publish failure
+        kshield.KShieldLedger.append_record("sys.event", {"item": 3}, path=self.vault_file)
+        saved_pos = pub.file_pos
+
+        class MockNcFail:
+            is_connected = True
+            async def publish(self, topic, payload):
+                raise ConnectionResetError("Simulated transport drop")
+
+        pub.nc = MockNcFail()
+        pub.running = True
+
+        asyncio.run(run_publisher())
+        # Offset must NOT advance past the failed third record
+        self.assertEqual(pub.file_pos, saved_pos)
+        self.assertEqual(pub.total_published, 2)
 
 
 if __name__ == "__main__":

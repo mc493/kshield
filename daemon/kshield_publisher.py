@@ -9,7 +9,8 @@ Runs as an independent publisher daemon on the primary host:
 2. Broadcasts newly committed blocks to NATS topic (kshield.security.witness.block).
 3. Emits periodic 30-second heartbeats to (kshield.security.heartbeat) to maintain
    the remote witness notary Dead-Man switch in healthy status.
-4. Resilient to network partitions, NATS restarts, and log rotation.
+4. Resilient to network partitions (offset backpressure), NATS restarts, and log rotation.
+5. Bounded O(1) tail seek initialization for instant startup across arbitrarily large ledgers.
 """
 
 import os
@@ -72,28 +73,45 @@ class KShieldPublisher:
                 await asyncio.sleep(5)
 
     def _sync_tail_position(self):
-        """Initializes read pointer to the current end-of-file, caching current head index and hash."""
+        """Initializes read pointer to current end-of-file, caching current head index and hash in O(1) time."""
         if not os.path.exists(self.vault_path):
             logger.warning(f"Ledger file not found at {self.vault_path}. Publisher will await file creation.")
             self.file_pos = 0
             return
 
         try:
-            with open(self.vault_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
+            file_size = os.path.getsize(self.vault_path)
+            self.file_pos = file_size
+            if file_size == 0:
+                self.last_index = 0
+                self.last_hash = "0" * 64
+                logger.info("Baseline synchronized: Ledger is empty. Offset: 0 bytes.")
+                return
+
+            with open(self.vault_path, "rb") as f:
+                try:
+                    if file_size > 65536:
+                        f.seek(-65536, os.SEEK_END)
+                        f.readline()  # discard potential partial line
+                    else:
+                        f.seek(0)
+                except OSError:
+                    f.seek(0)
+                lines = f.read().decode("utf-8", errors="ignore").strip().splitlines()
+                if lines:
+                    last_line = lines[-1].strip()
+                    if last_line:
                         try:
-                            rec = json.loads(line)
+                            rec = json.loads(last_line)
                             self.last_index = rec.get("index", 0)
                             self.last_hash = rec.get("hash", "0" * 64)
-                        except Exception:
-                            pass
-                self.file_pos = f.tell()
+                        except Exception as e:
+                            logger.warning(f"Failed to parse last ledger record: {e}")
             logger.info(f"Baseline synchronized: Head index #{self.last_index}, offset: {self.file_pos} bytes.")
         except Exception as e:
             logger.error(f"Error reading initial tail position: {e}")
             self.file_pos = 0
+
 
     async def heartbeat_loop(self):
         """Emits periodic heartbeats to maintain remote witness dead-man switch."""
@@ -115,7 +133,7 @@ class KShieldPublisher:
             await asyncio.sleep(HEARTBEAT_INTERVAL_SEC)
 
     async def tail_ledger_loop(self):
-        """Monitors local vault file for new records and publishes them across the network."""
+        """Monitors local vault file for new records and publishes them across the network with offset backpressure."""
         while self.running:
             if not os.path.exists(self.vault_path):
                 await asyncio.sleep(2)
@@ -129,26 +147,50 @@ class KShieldPublisher:
                     self.file_pos = 0
 
                 if file_size > self.file_pos:
+                    # Enforce backpressure: hold read offset until NATS transport is connected
+                    if not (self.nc and self.nc.is_connected):
+                        await asyncio.sleep(0.5)
+                        continue
+
                     with open(self.vault_path, "r", encoding="utf-8") as f:
                         f.seek(self.file_pos)
-                        for line in f:
+                        while self.running:
+                            line_start_pos = f.tell()
+                            line = f.readline()
+                            if not line:
+                                break
+
                             clean_line = line.strip()
                             if not clean_line:
+                                self.file_pos = f.tell()
                                 continue
+
+                            # Check connection before attempting publish
+                            if not (self.nc and self.nc.is_connected):
+                                logger.warning("NATS transport disconnected mid-batch. Holding offset for retry.")
+                                break
+
                             try:
                                 block = json.loads(clean_line)
-                                if self.nc and self.nc.is_connected:
-                                    await self.nc.publish(
-                                        WITNESS_BLOCK_TOPIC,
-                                        clean_line.encode("utf-8")
-                                    )
-                                    self.last_index = block.get("index", self.last_index)
-                                    self.last_hash = block.get("hash", self.last_hash)
-                                    self.total_published += 1
-                                    logger.info(f"Broadcast block #{self.last_index} ({block.get('topic')})")
+                            except json.JSONDecodeError as json_err:
+                                logger.error(f"Corrupted record at offset {line_start_pos}: {json_err}. Advancing offset past malformed line.")
+                                self.file_pos = f.tell()
+                                continue
+
+                            try:
+                                await self.nc.publish(
+                                    WITNESS_BLOCK_TOPIC,
+                                    clean_line.encode("utf-8")
+                                )
+                                self.last_index = block.get("index", self.last_index)
+                                self.last_hash = block.get("hash", self.last_hash)
+                                self.total_published += 1
+                                self.file_pos = f.tell()
+                                logger.info(f"Broadcast block #{self.last_index} ({block.get('topic')})")
                             except Exception as pub_err:
-                                logger.error(f"Failed to publish block: {pub_err}")
-                        self.file_pos = f.tell()
+                                logger.error(f"Failed to publish block #{block.get('index')}: {pub_err}. Holding offset for retry.")
+                                # Do NOT advance self.file_pos; break out to retry this block on next loop iteration
+                                break
             except Exception as e:
                 logger.error(f"Error reading ledger file: {e}")
 

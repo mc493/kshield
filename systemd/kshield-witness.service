@@ -1,6 +1,6 @@
 [Unit]
 Description=Project Aegis-Kernel (UKDF) Dual-Witness Notary Daemon
-Documentation=https://github.com/aegis-kernel/kshield
+Documentation=https://github.com/mc493/kshield
 After=network-online.target
 Wants=network-online.target
 
@@ -11,7 +11,7 @@ Group=kshield
 Environment=PYTHONUNBUFFERED=1
 Environment=NATS_URL=nats://127.0.0.1:4222
 Environment=KSHIELD_WITNESS_DIR=/var/log/kshield/witness
-ExecStart=/usr/local/bin/python3 -u /usr/local/lib/kshield/kshield_witness.py
+ExecStart=/usr/bin/python3 -u /usr/local/lib/kshield/kshield_witness.py
 Restart=always
 RestartSec=5s
 

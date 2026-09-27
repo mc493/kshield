@@ -42,7 +42,30 @@ mkdir -p "${BIN_DIR}"
 install -m 755 "${SCRIPT_DIR}/bin/kshield" "${BIN_DIR}/kshield"
 echo "  [OK] Installed ${BIN_DIR}/kshield"
 
-# 2. Install Daemons, Libraries and System Profiles
+# 2. Provision System Service Account & State Storage
+echo "[INFO] Configuring system service account and vault directories..."
+if ! getent group kshield >/dev/null 2>&1; then
+  groupadd -r kshield
+  echo "  [OK] Created system group: kshield"
+fi
+
+if ! getent passwd kshield >/dev/null 2>&1; then
+  NOLOGIN_BIN="$(command -v nologin 2>/dev/null || echo "/usr/sbin/nologin")"
+  [ -x "${NOLOGIN_BIN}" ] || NOLOGIN_BIN="/bin/false"
+  useradd -r -g kshield -d /var/log/kshield -s "${NOLOGIN_BIN}" -c "KShield Daemon Service Account" kshield
+  echo "  [OK] Created system user: kshield"
+fi
+
+# Ensure logging and WORM vault directories exist with secure ownership
+mkdir -p /var/log/kshield/witness
+touch /var/log/kshield/audit_chain.jsonl
+chown -R kshield:kshield /var/log/kshield
+chmod 755 /var/log/kshield
+chmod 750 /var/log/kshield/witness
+chmod 664 /var/log/kshield/audit_chain.jsonl
+echo "  [OK] Vault state permissions configured in /var/log/kshield"
+
+# 3. Install Daemons, Libraries and System Profiles
 echo "[INFO] Installing daemon modules to ${LIB_DIR}..."
 mkdir -p "${LIB_DIR}"
 install -m 755 "${SCRIPT_DIR}/daemon/kshield_witness.py" "${LIB_DIR}/kshield_witness.py"
@@ -57,7 +80,7 @@ mkdir -p "${SHARE_DIR}"
 install -m 644 "${SCRIPT_DIR}/profiles/seccomp-kshield-default.json" "${SHARE_DIR}/seccomp-kshield-default.json"
 echo "  [OK] Installed system profile to ${SHARE_DIR}/seccomp-kshield-default.json"
 
-# 3. Install Seccomp Profile (if Kubelet or Docker/containerd present)
+# 4. Install Seccomp Profile (if Kubelet or Docker/containerd present)
 if [ -d "/var/lib/kubelet" ] || command -v kubelet >/dev/null 2>&1 || command -v k3s >/dev/null 2>&1; then
   echo "[INFO] Detected Kubernetes / K3s environment. Installing Seccomp profile..."
   mkdir -p "${SECCOMP_DIR}"
@@ -65,10 +88,13 @@ if [ -d "/var/lib/kubelet" ] || command -v kubelet >/dev/null 2>&1 || command -v
   echo "  [OK] Installed Seccomp profile to ${SECCOMP_DIR}/seccomp-kshield-default.json"
 fi
 
-# 4. Optional Systemd Unit Templates
+# 5. Optional Systemd Unit Templates
 if [ -d "/etc/systemd/system" ] && command -v systemctl >/dev/null 2>&1; then
   echo "[INFO] Installing systemd unit files..."
-  cp "${SCRIPT_DIR}/systemd/"*.service /etc/systemd/system/ 2>/dev/null || true
+  PYTHON_BIN="$(command -v python3 || echo /usr/bin/python3)"
+  for sfile in "${SCRIPT_DIR}/systemd/"*.service; do
+    sed "s|/usr/local/bin/python3|${PYTHON_BIN}|g; s|/usr/bin/python3|${PYTHON_BIN}|g; s|/usr/local/lib/kshield|${LIB_DIR}|g" "${sfile}" > "/etc/systemd/system/$(basename "${sfile}")"
+  done
   cp "${SCRIPT_DIR}/systemd/"*.timer /etc/systemd/system/ 2>/dev/null || true
   systemctl daemon-reload 2>/dev/null || true
   echo "  [OK] Systemd service templates staged in /etc/systemd/system/"
