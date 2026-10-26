@@ -1,6 +1,8 @@
 # UKDF: Universal Kernel Defense Framework (`kshield`)
 ### Zero-Downtime Linux Attack Surface Hardening, Seccomp Sandboxing & Cryptographic Dual-Witness WORM Defense
 
+[![CI](https://github.com/mc493/kshield/actions/workflows/ci.yml/badge.svg)](https://github.com/mc493/kshield/actions)
+[![Release](https://img.shields.io/github/v/release/mc493/kshield?color=blue&label=Release)](https://github.com/mc493/kshield/releases/latest)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE)
 [![Architecture: x86_64 | aarch64](https://img.shields.io/badge/Architecture-x86__64%20%7C%20aarch64-green.svg?style=flat-square)](#)
 [![Zero Regression](https://img.shields.io/badge/POSIX%20Regression-0%25-brightgreen.svg?style=flat-square)](#)
