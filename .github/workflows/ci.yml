@@ -1,4 +1,4 @@
-name: CI Test & Hardening Validation Suite
+name: CI
 
 on:
   push:
