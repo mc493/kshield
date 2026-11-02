@@ -1,18 +1,43 @@
-# UKDF: Universal Kernel Defense Framework (`kshield`)
-### Zero-Downtime Linux Attack Surface Hardening, Seccomp Sandboxing & Cryptographic Dual-Witness WORM Defense
+# kshield (UKDF): Emergency Zero-Downtime Linux Kernel Defense & Zero-Day Hardening Engine
+### Active Hotpatching & Compensating Controls for CVE-2026-98432 (MPTCP RCE), CVE-2024-1086 (Netfilter), CVE-2026-53266, CVE-2025-39964 & Seccomp Syscall Disarmament
 
 [![CI](https://github.com/mc493/kshield/actions/workflows/ci.yml/badge.svg)](https://github.com/mc493/kshield/actions)
 [![Release](https://img.shields.io/github/v/tag/mc493/kshield?color=blue&label=Release)](https://github.com/mc493/kshield/releases)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![CVE: CVE-2026-98432](https://img.shields.io/badge/CVE-2026--98432%20(MPTCP%20RCE)-red.svg)](https://nvd.nist.gov/vuln/detail/CVE-2026-98432)
+[![CVE: CVE-2024-1086](https://img.shields.io/badge/CVE-2024--1086%20(Netfilter)-darkred.svg)](https://nvd.nist.gov/vuln/detail/CVE-2024-1086)
+[![CVE: CVE-2026-53266](https://img.shields.io/badge/CVE-2026--53266%20(ebtables)-orange.svg)](https://nvd.nist.gov/)
 [![Architecture: x86_64 | aarch64](https://img.shields.io/badge/Architecture-x86__64%20%7C%20aarch64-green.svg?style=flat-square)](#)
 [![Zero Regression](https://img.shields.io/badge/POSIX%20Regression-0%25-brightgreen.svg?style=flat-square)](#)
 [![Throughput](https://img.shields.io/badge/WORM%20Attestation-70k%2B%20rec%2Fsec-blueviolet.svg?style=flat-square)](#)
+[![Kubernetes: DaemonSet](https://img.shields.io/badge/Kubernetes-HostNetwork%20DaemonSet-brightgreen.svg)](k8s/)
 [![Engineered With: Antigravity CLI](https://img.shields.io/badge/Engineered%20With-Antigravity%20CLI%20(agy)-black?style=flat-square)](https://github.com/)
 [![Views](https://hits.sh/github.com/mc493/kshield.svg?style=flat-square&label=views)](traffic/SUMMARY.md)
 
-The **Universal Kernel Defense Framework (UKDF)** is an enterprise systems defense architecture engineered to systematically eliminate exploitable Linux kernel attack surfaces without requiring kernel recompilations, reboots, or production service downtime.
+**`kshield`** (implementing the **Universal Kernel Defense Framework / UKDF**) is an enterprise systems defense engine engineered to systematically eliminate exploitable Linux kernel attack surfaces without requiring kernel recompilations, reboots, or production service downtime.
 
-**`kshield`** is the zero-dependency reference implementation and unified CLI for the UKDF specification. It implements high-efficacy compensating controls and exploit-path prevention targeting primitives associated with **CVE-2024-1086** (Netfilter double-free), **CVE-2022-2602** (io_uring privilege escalation), **CVE-2022-0185** (fsopen heap overflow), **CVE-2022-2588** (route4 use-after-free), and **CVE-2023-32233** (Netfilter nf_tables UAF), while maintaining a **cryptographically chained, independently witnessed append-only audit ledger**.
+It provides immediate, zero-dependency Day-0 compensating controls and exploit-path prevention targeting critical pre-authentication and local privilege escalation primitives associated with:
+* **CVE-2026-98432 (CVSS 9.8 Critical):** Multipath TCP (MPTCP) remote ring-0 Use-After-Free & heap grooming exploit chain.
+* **CVE-2024-1086 (CVSS 7.8 High):** Netfilter `nf_tables` double-free privilege escalation.
+* **CVE-2026-53266 (CVSS 7.5 High):** Netfilter bridging `ebtables` ARP table corruption.
+* **CVE-2025-39964 (CVSS 7.8 High):** Crypto Netlink `AF_ALG` socket integer truncation.
+* **CVE-2022-2602 / CVE-2022-0185 / CVE-2022-2588:** `io_uring`, `fsopen` heap overflow, and `route4` use-after-free.
+
+All defense actions are cryptographically chained and independently notarized via a **dual-witness append-only WORM audit ledger**.
+
+---
+
+## Emergency 10-Second Incident Response (Threat Matrix)
+
+When critical vulnerabilities are added to the CISA Known Exploited Vulnerabilities (KEV) catalog, `kshield` delivers instant, verified operational mitigation:
+
+| Target CVE | Affected Subsystem | Attack Vector | `kshield` Compensating Control | Zero-Downtime Mechanism |
+| :--- | :--- | :--- | :--- | :--- |
+| **CVE-2026-98432** | IPv4 / Multipath TCP | Remote Pre-Auth Root RCE | `net.mptcp.enabled = 0` | Sysctl disarm + `/run/sysctl.d` injection |
+| **CVE-2026-53266** | Netfilter (`ebtables`) | Local Kernel Memory Corruption | Disarm module loader (`/bin/true`) | RAM eviction (`modprobe -r`) + Volatile `/run/modprobe.d` override |
+| **CVE-2025-39964** | Crypto Netlink (`AF_ALG`) | Container Breakout / LPE | Synchronous Seccomp Gating | Returns `EACCES` (`SCMP_ACT_ERRNO`) on `socket(38)` before ring-0 dispatch |
+| **CVE-2024-1086** | Netfilter (`nf_tables`) | Double-Free Kernel LPE | Dormant protocol eviction | Restricts unprivileged user namespaces + loader block |
+| **CVE-2022-2602** | `io_uring` Core | Async I/O Privilege Escalation | Syscall Seccomp Interception | Blocks `io_uring_setup` with zero runtime latency impact |
 
 > [!NOTE]
 > **Architectural & Research Disambiguation:**  
