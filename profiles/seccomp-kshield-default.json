@@ -52,6 +52,20 @@
           "op": "SCMP_CMP_EQ"
         }
       ]
+    },
+    {
+      "names": [
+        "socket"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "comment": "Synchronously block Multipath TCP (MPTCP) sockets (protocol 262) to neutralize remote and local kernel UAF exploitation (CVE-2026-98432)",
+      "args": [
+        {
+          "index": 2,
+          "value": 262,
+          "op": "SCMP_CMP_EQ"
+        }
+      ]
     }
   ]
 }

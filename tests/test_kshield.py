@@ -54,6 +54,7 @@ class TestSysctlConfiguration(unittest.TestCase):
         self.assertIn("fs.protected_fifos = 2", cfg)
         self.assertIn("fs.protected_regular = 2", cfg)
         self.assertIn("kernel.perf_event_paranoid = 2", cfg)
+        self.assertIn("net.mptcp.enabled = 0", cfg)
         # Verify user.max_user_namespaces is NOT disabled in container-host mode
         self.assertNotIn("user.max_user_namespaces", cfg)
 
@@ -61,6 +62,7 @@ class TestSysctlConfiguration(unittest.TestCase):
         """Verifies strict-host profile disables unprivileged user namespaces."""
         cfg = kshield.KShieldDisarm.generate_sysctl_config(profile="strict-host")
         self.assertIn("kernel.unprivileged_bpf_disabled = 1", cfg)
+        self.assertIn("net.mptcp.enabled = 0", cfg)
         self.assertIn("user.max_user_namespaces = 0", cfg)
         self.assertIn("# Profile: strict-host", cfg)
 
@@ -320,6 +322,24 @@ class TestSeccompProfileIntegrity(unittest.TestCase):
         self.assertIn("userfaultfd", blocked_syscalls)
         self.assertIn("kexec_load", blocked_syscalls)
         self.assertIn("reboot", blocked_syscalls)
+        self.assertIn("socket", blocked_syscalls)
+
+        # Verify socket syscall has rules for both AF_ALG (domain 38) and MPTCP (proto 262)
+        socket_rules = [r for r in profile.get("syscalls", []) if "socket" in r.get("names", [])]
+        self.assertGreaterEqual(len(socket_rules), 2)
+        args_values = [arg["value"] for r in socket_rules for arg in r.get("args", [])]
+        self.assertIn(38, args_values)
+        self.assertIn(262, args_values)
+
+
+class TestSandboxProbing(unittest.TestCase):
+    """Validates non-destructive exploit primitive probing logic."""
+
+    def test_mptcp_probe_included(self):
+        """Verifies test_blocked_primitives probes MPTCP and records a valid status."""
+        results = kshield.KShieldSandbox.test_blocked_primitives()
+        self.assertIn("mptcp", results)
+        self.assertIn(results["mptcp"], ("BLOCKED", "UNPROTECTED", "HOST_PERMITTED"))
 
 
 class TestCliParsing(unittest.TestCase):

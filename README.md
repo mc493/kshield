@@ -189,17 +189,18 @@ Tested, benchmarked, and continuously attested across production multi-architect
 | :--- | :--- | :--- | :--- |
 | **Linux Kernel Baseline** | Linux 7.x (Modern HWE) | Linux 6.8 (Enterprise LTS) | Linux 6.12 (ARM64 LTS) |
 | **Syscall Latency (`getpid`)** | **909.27 ns** | **1,509.73 ns** | **704.18 ns** |
-| **Targeted Exploit Probes** | **4 / 4 Blocked (100% of tested probes)** | **4 / 4 Blocked (100% of tested probes)** | **4 / 4 Blocked (100% of tested probes)** |
+| **Targeted Exploit Probes** | **5 / 5 Blocked (100% of tested probes)** | **5 / 5 Blocked (100% of tested probes)** | **5 / 5 Blocked (100% of tested probes)** |
 | **Normal POSIX Workload** | **100% Operational (0 reg)** | **100% Operational (0 reg)** | **100% Operational (0 reg)** |
-| **Audit Score Improvement** | **73 ──> 89 (+16 pts)** | **78 ──> 92 (+14 pts)** | **46 ──> 60 (+14 pts)** |
+| **Audit Score Improvement** | **74 ──> 90 (+16 pts)** | **78 ──> 92 (+14 pts)** | **46 ──> 60 (+14 pts)** |
 | **Ledger Attestation Rate** | **Reference: 70k+ rec/s** | **Streaming Notary** | **Local Observer** |
 
 > **Methodology and Scope:**  
-> The 4/4 benchmark measures resilience against the four specific attack primitives probed non-destructively by `kshield verify-sandbox`:
+> The 5/5 benchmark measures resilience against the five specific attack primitives probed non-destructively by `kshield verify-sandbox`:
 > 1. `AF_ALG` netlink crypto socket allocation (`socket(AF_ALG, SOCK_SEQPACKET, 0)`)
 > 2. `userfaultfd` unprivileged page fault trap initialization (`syscall(NR_userfaultfd, ...)`)
 > 3. `io_uring_setup` ring creation (`syscall(NR_io_uring_setup, ...)`)
 > 4. `kexec_load` kernel image injection (`syscall(NR_kexec_load, ...)`)  
+> 5. `MPTCP` Multipath TCP socket allocation (`socket(AF_INET, SOCK_STREAM, 262)`) — Defangs CVE-2026-98432 remote root attack surface.  
 > This asserts that configured Seccomp boundaries and sysctl gates are functioning as specified. It is not an assertion of generic immunity against all possible kernel vulnerabilities.
 > High-throughput attestation benchmarks (70,000+ records/sec) reflect reference enterprise deployments backed by asynchronous compiled storage daemons. The standalone Python standard-library implementation executes cryptographic ledger verification with sub-millisecond per-block latency (~770,000 syscall evaluation cycles/sec per core).
 

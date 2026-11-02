@@ -60,7 +60,8 @@ MODULE_CATALOG = {
         "ax25", "netrom", "x25", "rose",
         "decnet", "econet", "af_802154",
         "appletalk", "ipx", "psnap", "p8023", "p8022",
-        "can", "can_raw", "can_bcm", "atm"
+        "can", "can_raw", "can_bcm", "atm",
+        "mptcp"
     ],
     "legacy_filesystems": [
         "cramfs", "freevxfs", "jffs2", "hfs", "hfsplus",
@@ -89,7 +90,8 @@ SYSCTL_TARGETS = {
     "fs.protected_hardlinks": {"target": [1], "default_set": 1, "weight": 5, "desc": "Prevent hardlink permission bypasses"},
     "fs.protected_fifos": {"target": [1, 2], "default_set": 2, "weight": 5, "desc": "Prevent spoofed FIFO file writes in world-writable dirs"},
     "fs.protected_regular": {"target": [1, 2], "default_set": 2, "weight": 5, "desc": "Prevent regular file write truncation in sticky dirs"},
-    "kernel.perf_event_paranoid": {"target": [2, 3, 4], "default_set": 2, "weight": 5, "desc": "Restrict hardware performance counter side-channels"}
+    "kernel.perf_event_paranoid": {"target": [2, 3, 4], "default_set": 2, "weight": 5, "desc": "Restrict hardware performance counter side-channels"},
+    "net.mptcp.enabled": {"target": [0], "default_set": 0, "weight": 10, "desc": "Disable Multipath TCP remote root RCE surface (CVE-2026-98432)"}
 }
 
 # Optional targets for strict non-container host profile
@@ -831,6 +833,28 @@ class KShieldSandbox:
             else:
                 print(f"  [INFO] Probe 4 (kexec_load): Denied or unsupported (errno={err})")
                 results["kexec_load"] = f"ERR_{err}"
+
+        # 5. MPTCP socket allocation (CVE-2026-98432 remote root attack surface)
+        try:
+            # IPPROTO_MPTCP = 262
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 262)
+            s.close()
+            print("  [ERROR] Probe 5 (MPTCP / CVE-2026-98432): FAILED — MPTCP socket created successfully! (Attack surface active)")
+            results["mptcp"] = "UNPROTECTED"
+        except PermissionError:
+            print("  [OK] Probe 5 (MPTCP / CVE-2026-98432): BLOCKED by Seccomp/LSM (PermissionError / EACCES)")
+            results["mptcp"] = "BLOCKED"
+        except OSError as e:
+            errno_val = getattr(e, "errno", None)
+            if errno_val in (1, 13):
+                print(f"  [OK] Probe 5 (MPTCP / CVE-2026-98432): BLOCKED by Seccomp (errno={errno_val})")
+                results["mptcp"] = "BLOCKED"
+            elif errno_val in (92, 93):  # ENOPROTOOPT (92) or EPROTONOSUPPORT (93)
+                print(f"  [OK] Probe 5 (MPTCP / CVE-2026-98432): BLOCKED by Sysctl net.mptcp.enabled=0 (errno={errno_val})")
+                results["mptcp"] = "BLOCKED"
+            else:
+                print(f"  [WARN] Probe 5 (MPTCP / CVE-2026-98432): Denied with unexpected errno: {e}")
+                results["mptcp"] = f"ERR_{errno_val}"
 
         return results
 
