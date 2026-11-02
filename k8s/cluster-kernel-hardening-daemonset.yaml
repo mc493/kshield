@@ -125,6 +125,7 @@ spec:
           fs.protected_fifos = 2
           fs.protected_regular = 2
           kernel.perf_event_paranoid = 2
+          net.mptcp.enabled = 0
           EOF
           chmod 644 /host/run/sysctl.d/99-kshield.conf
           echo "  [OK] Staged sysctl hardening baseline via /run/sysctl.d/"
