@@ -45,8 +45,14 @@ GENESIS_PREV_HASH = "00000000000000000000000000000000000000000000000000000000000
 
 
 class KShieldWitness:
-    def __init__(self, ledger_path: str = WITNESS_FILE):
+    def __init__(self, ledger_path: str = WITNESS_FILE, status_path: Optional[str] = None):
         self.ledger_path = ledger_path
+        if status_path is not None:
+            self.status_path = status_path
+        elif ledger_path != WITNESS_FILE:
+            self.status_path = os.path.join(os.path.dirname(os.path.abspath(ledger_path)), "witness_status.json")
+        else:
+            self.status_path = STATUS_FILE
         self.last_index = 0
         self.last_hash = GENESIS_PREV_HASH
         self.total_verified = 0
@@ -59,22 +65,45 @@ class KShieldWitness:
         self._init_ledger()
 
     def _init_ledger(self):
-        os.makedirs(os.path.dirname(self.ledger_path), exist_ok=True)
-        if os.path.exists(self.ledger_path):
-            logger.info(f"Reading existing ledger baseline: {self.ledger_path}...")
-            count = 0
-            with open(self.ledger_path, "r", encoding="utf-8") as f:
-                for line in f:
+        os.makedirs(os.path.dirname(os.path.abspath(self.ledger_path)), exist_ok=True)
+        if os.path.exists(self.ledger_path) and os.path.getsize(self.ledger_path) > 0:
+            logger.info(f"Reading existing ledger baseline (O(1) tail seek): {self.ledger_path}...")
+            t0 = time.perf_counter()
+            file_size = os.path.getsize(self.ledger_path)
+            found = False
+            with open(self.ledger_path, "rb") as f:
+                chunk_size = min(131072, file_size)
+                f.seek(file_size - chunk_size)
+                tail_text = f.read(chunk_size).decode("utf-8", errors="ignore")
+                for line in reversed(tail_text.splitlines()):
                     line = line.strip(" \t\r\n\x00")
-                    if line:
-                        try:
-                            rec = json.loads(line)
-                            self.last_index = rec.get("index", 0)
-                            self.last_hash = rec.get("hash", GENESIS_PREV_HASH)
-                            count += 1
-                        except Exception:
-                            pass
-            logger.info(f"[OK] Baseline loaded: {count:,} records. Head Index: {self.last_index}, Head Hash: {self.last_hash[:16]}...")
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        if isinstance(rec, dict) and "index" in rec and "hash" in rec and "prev_hash" in rec:
+                            self.last_index = int(rec["index"])
+                            self.last_hash = str(rec["hash"])
+                            found = True
+                            break
+                    except Exception:
+                        pass
+            if not found:
+                with open(self.ledger_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip(" \t\r\n\x00")
+                        if line:
+                            try:
+                                rec = json.loads(line)
+                                if isinstance(rec, dict) and "index" in rec and "hash" in rec and "prev_hash" in rec:
+                                    self.last_index = int(rec["index"])
+                                    self.last_hash = str(rec["hash"])
+                            except Exception:
+                                pass
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            logger.info(
+                f"[OK] Baseline loaded in {elapsed_ms:.2f}ms. Head Index: {self.last_index:,}, Head Hash: {self.last_hash[:16]}..."
+            )
         else:
             logger.warning(f"Ledger file not found at {self.ledger_path}. Awaiting first block or baseline sync.")
 
@@ -95,7 +124,7 @@ class KShieldWitness:
             "updated_at": time.time()
         }
         try:
-            with open(STATUS_FILE, "w", encoding="utf-8") as f:
+            with open(self.status_path, "w", encoding="utf-8") as f:
                 json.dump(status, f, indent=2)
         except Exception as e:
             logger.warning(f"Could not write status file: {e}")
@@ -142,10 +171,24 @@ class KShieldWitness:
         prev_hash = block.get("prev_hash")
         received_hash = block.get("hash")
 
-        expected_index = self.last_index + 1
+        if idx == 0 and self.last_index == 0 and self.last_hash == GENESIS_PREV_HASH:
+            expected_index = 0
+        else:
+            expected_index = self.last_index + 1
 
-        # Case 1: Already processed / stale block
-        if idx <= self.last_index:
+        # Case 1: Already processed / stale block within duplicate-delivery window, or Epoch Rotation
+        if idx < expected_index:
+            if idx < self.last_index - REORDER_WINDOW_MAX:
+                if not self.desynchronized:
+                    self.desynchronized = True
+                    err_msg = (
+                        f"[ALERT] EPOCH ROTATION / TRUNCATION: Received block #{idx} "
+                        f"<< head index #{self.last_index} (> window {REORDER_WINDOW_MAX})! Awaiting baseline sync."
+                    )
+                    logger.error(err_msg)
+                    await self._emit_alert("CRITICAL", "EPOCH_ROTATION_DETECTED", err_msg)
+                    self._write_status("DESYNCHRONIZED")
+                return False
             return True
 
         # Case 2: Out of order block within reorder window
@@ -168,17 +211,21 @@ class KShieldWitness:
         # Case 3: Exactly the expected next block (idx == expected_index)
         # Verify Hash Chain Continuity
         if prev_hash != self.last_hash:
+            self.desynchronized = True
             err_msg = f"[ALERT] HASH CHAIN BROKEN: Block #{idx} prev_hash ({prev_hash[:16]}...) != expected ({self.last_hash[:16]}...)!"
             logger.error(err_msg)
             await self._emit_alert("CRITICAL", "HASH_CHAIN_DIVERGENCE", err_msg)
+            self._write_status("DESYNCHRONIZED")
             return False
 
         # Verify Payload Integrity
         computed = self.compute_hash(idx, ts, topic, data, prev_hash)
         if computed != received_hash:
+            self.desynchronized = True
             err_msg = f"[ALERT] CRYPTOGRAPHIC MISMATCH: Block #{idx} stored hash ({received_hash[:16]}...) != computed ({computed[:16]}...)!"
             logger.error(err_msg)
             await self._emit_alert("CRITICAL", "PAYLOAD_TAMPERING", err_msg)
+            self._write_status("DESYNCHRONIZED")
             return False
 
         # Synchronous Commit to Disk (NVMe WORM)

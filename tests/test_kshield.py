@@ -35,6 +35,13 @@ pub_spec = spec_from_loader("kshield_publisher", pub_loader)
 kshield_publisher = module_from_spec(pub_spec)
 pub_loader.exec_module(kshield_publisher)
 
+# Dynamically import daemon/kshield_witness.py
+WITNESS_PATH = os.path.join(REPO_ROOT, "daemon", "kshield_witness.py")
+wit_loader = SourceFileLoader("kshield_witness", WITNESS_PATH)
+wit_spec = spec_from_loader("kshield_witness", wit_loader)
+kshield_witness = module_from_spec(wit_spec)
+wit_loader.exec_module(kshield_witness)
+
 
 class TestSysctlConfiguration(unittest.TestCase):
     """Validates sysctl configuration generator across operational profiles."""
@@ -520,6 +527,124 @@ class TestPublisherBridge(unittest.TestCase):
         # Offset must NOT advance past the failed third record
         self.assertEqual(pub.file_pos, saved_pos)
         self.assertEqual(pub.total_published, 2)
+
+
+class TestWitnessNotary(unittest.TestCase):
+    """Validates witness notary O(1) tail baseline loading, reorder window, hash continuity, and epoch reset detection."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="kshield_wit_test_")
+        self.witness_file = os.path.join(self.test_dir, "audit_chain_witness.jsonl")
+        self.status_file = os.path.join(self.test_dir, "witness_status.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    @staticmethod
+    def _make_block(index: int, prev_hash: str, topic: str = "sys.audit", data: dict = None) -> dict:
+        if data is None:
+            data = {"seq": index}
+        ts = 1727400000.0 + index
+        blk_hash = kshield_witness.KShieldWitness.compute_hash(index, ts, topic, data, prev_hash)
+        return {
+            "index": index,
+            "timestamp": ts,
+            "topic": topic,
+            "data": data,
+            "prev_hash": prev_hash,
+            "hash": blk_hash,
+        }
+
+    def test_o1_tail_seek_baseline_initialization(self):
+        """Verifies O(1) reverse tail seek loads head index and hash accurately from existing ledger."""
+        prev_hash = kshield_witness.GENESIS_PREV_HASH
+        with open(self.witness_file, "w", encoding="utf-8") as f:
+            for i in range(25):
+                blk = self._make_block(i, prev_hash)
+                f.write(json.dumps(blk) + "\n")
+                prev_hash = blk["hash"]
+
+        witness = kshield_witness.KShieldWitness(ledger_path=self.witness_file, status_path=self.status_file)
+        self.assertEqual(witness.last_index, 24)
+        self.assertEqual(witness.last_hash, prev_hash)
+
+    def test_sequential_and_out_of_order_block_commit(self):
+        """Verifies 0-indexed genesis ingestion and out-of-order reorder buffer draining."""
+        witness = kshield_witness.KShieldWitness(ledger_path=self.witness_file, status_path=self.status_file)
+        b0 = self._make_block(0, kshield_witness.GENESIS_PREV_HASH)
+        b1 = self._make_block(1, b0["hash"])
+        b2 = self._make_block(2, b1["hash"])
+
+        async def run_flow():
+            # Process Genesis #0
+            ok0 = await witness.process_block(b0)
+            self.assertTrue(ok0)
+            self.assertEqual(witness.last_index, 0)
+            # Duplicate #0 is idempotently ignored
+            ok0_dup = await witness.process_block(b0)
+            self.assertTrue(ok0_dup)
+            # Out-of-order #2 arrives before #1 -> buffered
+            ok2_early = await witness.process_block(b2)
+            self.assertFalse(ok2_early)
+            self.assertIn(2, witness.reorder_buffer)
+            # Arrival of #1 commits #1 and automatically drains #2
+            ok1 = await witness.process_block(b1)
+            self.assertTrue(ok1)
+            self.assertEqual(witness.last_index, 2)
+            self.assertEqual(witness.last_hash, b2["hash"])
+            self.assertEqual(len(witness.reorder_buffer), 0)
+
+        asyncio.run(run_flow())
+
+    def test_epoch_rotation_truncation_detection(self):
+        """Verifies cross-epoch primary reset (idx << last_index - REORDER_WINDOW_MAX) triggers EPOCH_ROTATION_DETECTED."""
+        witness = kshield_witness.KShieldWitness(ledger_path=self.witness_file, status_path=self.status_file)
+        witness.last_index = 5000
+        witness.last_hash = "a" * 64
+
+        alerts = []
+
+        class MockNc:
+            async def publish(self, topic, payload):
+                alerts.append((topic, json.loads(payload.decode("utf-8"))))
+
+        witness.nc = MockNc()
+        new_genesis = self._make_block(0, kshield_witness.GENESIS_PREV_HASH)
+
+        res = asyncio.run(witness.process_block(new_genesis))
+        self.assertFalse(res)
+        self.assertTrue(witness.desynchronized)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0][1]["event_type"], "EPOCH_ROTATION_DETECTED")
+
+        with open(self.status_file, "r", encoding="utf-8") as f:
+            st = json.load(f)
+        self.assertEqual(st["status"], "DESYNCHRONIZED")
+        self.assertTrue(st["desynchronized"])
+
+    def test_hash_divergence_and_tampering_mark_desynchronized(self):
+        """Verifies hash chain divergence and payload tampering immediately persist DESYNCHRONIZED state."""
+        witness = kshield_witness.KShieldWitness(ledger_path=self.witness_file, status_path=self.status_file)
+        b0 = self._make_block(0, kshield_witness.GENESIS_PREV_HASH)
+        asyncio.run(witness.process_block(b0))
+
+        # 1. Hash chain broken on block #1
+        bad_prev = self._make_block(1, "f" * 64)
+        res_chain = asyncio.run(witness.process_block(bad_prev))
+        self.assertFalse(res_chain)
+        self.assertTrue(witness.desynchronized)
+        with open(self.status_file, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["status"], "DESYNCHRONIZED")
+
+        # Reset desynchronized flag and test payload tampering
+        witness.desynchronized = False
+        tampered = self._make_block(1, b0["hash"], data={"seq": 1})
+        tampered["data"] = {"seq": 999}
+        res_tamper = asyncio.run(witness.process_block(tampered))
+        self.assertFalse(res_tamper)
+        self.assertTrue(witness.desynchronized)
+        with open(self.status_file, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["status"], "DESYNCHRONIZED")
 
 
 class TestBenchmarkHarness(unittest.TestCase):
