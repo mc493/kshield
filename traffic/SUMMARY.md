@@ -1,7 +1,7 @@
 # 360° Repository Traffic & Telemetry History
 
 > **Repository:** [`mc493/kshield`](https://github.com/mc493/kshield)  
-> **Last Updated:** `2026-11-12T05:17:43.636478+00:00` (UTC)  
+> **Last Updated:** `2026-11-13T20:07:46.297909+00:00` (UTC)  
 > **Archival Engine:** Automated Continuous Time-Series Ledger (Defeats GitHub 14-Day Cliff)
 
 ---
@@ -10,9 +10,9 @@
 
 | Metric | Total / Status | Description |
 | :--- | :---: | :--- |
-| **Live Badge Hits** | `272` | Public visual hits via `hits.sh` web beacon |
-| **Total Page Views** | `0` | Cumulative page views tracked via GitHub API |
-| **Total Git Clones** | `0` | Cumulative repository clones via CLI |
+| **Live Badge Hits** | `3` | Public visual hits via `hits.sh` web beacon |
+| **Total Page Views** | `172` | Cumulative page views tracked via GitHub API |
+| **Total Git Clones** | `635` | Cumulative repository clones via CLI |
 | **Stargazers** | `0` | Total GitHub stars |
 | **Forks** | `0` | Total repository forks |
 | **Watchers** | `0` | Total subscribers |
@@ -23,19 +23,20 @@
 
 | Date | Web Beacon Hits | GitHub Views (Total) | GitHub Views (Unique) | Git Clones |
 | :---: | :---: | :---: | :---: | :---: |
-| `2026-11-12` | 4 | - | - | - |
-| `2026-11-11` | 7 | - | - | - |
-| `2026-11-10` | 6 | - | - | - |
-| `2026-11-09` | 12 | - | - | - |
-| `2026-11-08` | 6 | - | - | - |
-| `2026-11-07` | 11 | - | - | - |
-| `2026-11-06` | 7 | - | - | - |
-| `2026-11-05` | 24 | - | - | - |
-| `2026-11-04` | 44 | - | - | - |
-| `2026-11-03` | 40 | - | - | - |
-| `2026-11-02` | 22 | - | - | - |
-| `2026-11-01` | 1 | - | - | - |
-| `2026-10-30` | 1 | - | - | - |
+| `2026-11-12` | 4 | 26 | 4 | 53 |
+| `2026-11-11` | 7 | 5 | 3 | 49 |
+| `2026-11-10` | 6 | 8 | 5 | 44 |
+| `2026-11-09` | 12 | 3 | 3 | 40 |
+| `2026-11-08` | 6 | 13 | 5 | 54 |
+| `2026-11-07` | 11 | 4 | 3 | 37 |
+| `2026-11-06` | 7 | 12 | 5 | 55 |
+| `2026-11-05` | 24 | 12 | 10 | 52 |
+| `2026-11-04` | 44 | 20 | 16 | 68 |
+| `2026-11-03` | 40 | 37 | 27 | 70 |
+| `2026-11-02` | 22 | 26 | 12 | 86 |
+| `2026-11-01` | 1 | 3 | 1 | 4 |
+| `2026-10-31` | - | 0 | 0 | 19 |
+| `2026-10-30` | 1 | 3 | 1 | 4 |
 | `2026-10-28` | 1 | - | - | - |
 | `2026-10-27` | 1 | - | - | - |
 | `2026-10-26` | 7 | - | - | - |
@@ -65,7 +66,13 @@
 
 | Referrer | Views (Total) | Visitors (Unique) |
 | :--- | :---: | :---: |
-| *No external referrers recorded yet (requires TRAFFIC_TOKEN)* | 0 | 0 |
+| **github.com** | 55 | 25 |
+| **t.me** | 8 | 6 |
+| **x.threatbook.com** | 2 | 2 |
+| **org.telegram.messenger** | 1 | 1 |
+| **org.telegram.plus** | 1 | 1 |
+| **threatpulse.appstackshop.com** | 1 | 1 |
+| **xsa.numatech.ru** | 1 | 1 |
 
 ---
 
