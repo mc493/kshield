@@ -1,5 +1,5 @@
 {
-  "badge_hits": 317,
+  "badge_hits": 320,
   "clones": [],
   "daily_beacon_hits": {
     "2026-09-27": 20,
@@ -41,7 +41,7 @@
     "2026-11-14": 4,
     "2026-11-15": 10,
     "2026-11-16": 5,
-    "2026-11-17": 1
+    "2026-11-17": 4
   },
   "daily_clones": {
     "2026-10-30": {
@@ -107,6 +107,18 @@
     "2026-11-14": {
       "count": 58,
       "uniques": 26
+    },
+    "2026-11-15": {
+      "count": 57,
+      "uniques": 34
+    },
+    "2026-11-16": {
+      "count": 26,
+      "uniques": 14
+    },
+    "2026-11-17": {
+      "count": 36,
+      "uniques": 19
     }
   },
   "daily_views": {
@@ -173,16 +185,28 @@
     "2026-11-14": {
       "count": 5,
       "uniques": 3
+    },
+    "2026-11-15": {
+      "count": 4,
+      "uniques": 4
+    },
+    "2026-11-16": {
+      "count": 3,
+      "uniques": 2
+    },
+    "2026-11-17": {
+      "count": 4,
+      "uniques": 3
     }
   },
   "first_recorded": "2026-09-26T18:22:51.229513+00:00",
   "forks": 0,
-  "last_updated": "2026-11-17T05:59:45.775264+00:00",
+  "last_updated": "2026-11-18T05:29:13.102401+00:00",
   "open_issues": 0,
   "referrers": {
     "github.com": {
-      "count": 56,
-      "uniques": 27
+      "count": 40,
+      "uniques": 23
     },
     "org.telegram.messenger": {
       "count": 1,
@@ -193,16 +217,16 @@
       "uniques": 1
     },
     "t.me": {
-      "count": 8,
-      "uniques": 6
+      "count": 1,
+      "uniques": 1
     },
     "threatpulse.appstackshop.com": {
       "count": 1,
       "uniques": 1
     },
     "x.threatbook.com": {
-      "count": 2,
-      "uniques": 2
+      "count": 1,
+      "uniques": 1
     },
     "xsa.numatech.ru": {
       "count": 1,

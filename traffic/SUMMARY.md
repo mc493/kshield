@@ -1,7 +1,7 @@
 # 360° Repository Traffic & Telemetry History
 
 > **Repository:** [`mc493/kshield`](https://github.com/mc493/kshield)  
-> **Last Updated:** `2026-11-17T05:59:45.775264+00:00` (UTC)  
+> **Last Updated:** `2026-11-18T05:29:13.102401+00:00` (UTC)  
 > **Archival Engine:** Automated Continuous Time-Series Ledger (Defeats GitHub 14-Day Cliff)
 
 ---
@@ -10,9 +10,9 @@
 
 | Metric | Total / Status | Description |
 | :--- | :---: | :--- |
-| **Live Badge Hits** | `317` | Public visual hits via `hits.sh` web beacon |
-| **Total Page Views** | `200` | Cumulative page views tracked via GitHub API |
-| **Total Git Clones** | `761` | Cumulative repository clones via CLI |
+| **Live Badge Hits** | `320` | Public visual hits via `hits.sh` web beacon |
+| **Total Page Views** | `211` | Cumulative page views tracked via GitHub API |
+| **Total Git Clones** | `880` | Cumulative repository clones via CLI |
 | **Stargazers** | `0` | Total GitHub stars |
 | **Forks** | `0` | Total repository forks |
 | **Watchers** | `0` | Total subscribers |
@@ -23,9 +23,9 @@
 
 | Date | Web Beacon Hits | GitHub Views (Total) | GitHub Views (Unique) | Git Clones |
 | :---: | :---: | :---: | :---: | :---: |
-| `2026-11-17` | 1 | - | - | - |
-| `2026-11-16` | 5 | - | - | - |
-| `2026-11-15` | 10 | - | - | - |
+| `2026-11-17` | 4 | 4 | 3 | 36 |
+| `2026-11-16` | 5 | 3 | 2 | 26 |
+| `2026-11-15` | 10 | 4 | 4 | 57 |
 | `2026-11-14` | 4 | 5 | 3 | 58 |
 | `2026-11-13` | 21 | 23 | 6 | 68 |
 | `2026-11-12` | 8 | 26 | 4 | 53 |
@@ -71,12 +71,12 @@
 
 | Referrer | Views (Total) | Visitors (Unique) |
 | :--- | :---: | :---: |
-| **github.com** | 56 | 27 |
-| **t.me** | 8 | 6 |
-| **x.threatbook.com** | 2 | 2 |
+| **github.com** | 40 | 23 |
 | **org.telegram.messenger** | 1 | 1 |
 | **org.telegram.plus** | 1 | 1 |
+| **t.me** | 1 | 1 |
 | **threatpulse.appstackshop.com** | 1 | 1 |
+| **x.threatbook.com** | 1 | 1 |
 | **xsa.numatech.ru** | 1 | 1 |
 
 ---
