@@ -34,11 +34,16 @@ WITNESS_DIR = os.getenv("KSHIELD_WITNESS_DIR", "/var/log/kshield/witness")
 WITNESS_FILE = os.path.join(WITNESS_DIR, "audit_chain_witness.jsonl")
 STATUS_FILE = os.path.join(WITNESS_DIR, "witness_status.json")
 WITNESS_BLOCK_TOPIC = os.getenv("KSHIELD_WITNESS_BLOCK_TOPIC", "kshield.security.witness.block")
+WITNESS_REPLAY_TOPIC = os.getenv("KSHIELD_WITNESS_REPLAY_TOPIC", "kshield.security.witness.replay")
 HEARTBEAT_TOPIC = os.getenv("KSHIELD_HEARTBEAT_TOPIC", "kshield.security.heartbeat")
 WITNESS_ALERT_TOPIC = os.getenv("KSHIELD_WITNESS_ALERT_TOPIC", "kshield.security.witness.alert")
 DEAD_MAN_TIMEOUT_SEC = float(os.getenv("KSHIELD_DEAD_MAN_TIMEOUT_SEC", "60.0"))
 ALERT_COOLDOWN_SEC = float(os.getenv("KSHIELD_ALERT_COOLDOWN_SEC", "60.0"))
 REORDER_WINDOW_MAX = int(os.getenv("KSHIELD_REORDER_WINDOW_MAX", "200"))
+REORDER_CATCHUP_MAX = int(os.getenv("KSHIELD_REORDER_CATCHUP_MAX", "4000"))
+REPLAY_BATCH_SIZE = int(os.getenv("KSHIELD_REPLAY_BATCH_SIZE", "200"))
+REPLAY_TIMEOUT_SEC = float(os.getenv("KSHIELD_REPLAY_TIMEOUT_SEC", "5.0"))
+REPLAY_COOLDOWN_SEC = float(os.getenv("KSHIELD_REPLAY_COOLDOWN_SEC", "2.0"))
 NODE_ID = os.getenv("KSHIELD_NODE_ID", "witness-notary-01")
 
 GENESIS_PREV_HASH = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -62,6 +67,10 @@ class KShieldWitness:
         self.reorder_buffer: Dict[int, Dict[str, Any]] = {}
         self.last_alert_times: Dict[str, float] = {}
         self.nc = None
+        self._catchup_task: Optional[asyncio.Task] = None
+        self._last_catchup_attempt = 0.0
+        self._catchup_target_index = 0
+        self._total_replayed = 0
         self._init_ledger()
 
     def _init_ledger(self):
@@ -119,6 +128,7 @@ class KShieldWitness:
             "reorder_buffer_size": len(self.reorder_buffer),
             "desynchronized": self.desynchronized,
             "total_verified_in_session": self.total_verified,
+            "total_replayed_in_session": self._total_replayed,
             "last_heartbeat_timestamp": self.last_heartbeat_time,
             "dead_man_active": not self.dead_man_tripped,
             "updated_at": time.time()
@@ -163,7 +173,79 @@ class KShieldWitness:
             f.flush()
             os.fsync(f.fileno())
 
-    async def process_block(self, block: Dict[str, Any]) -> bool:
+    def _schedule_catchup(self, target_index: int):
+        if target_index > self._catchup_target_index:
+            self._catchup_target_index = target_index
+        if self._catchup_task is not None and not self._catchup_task.done():
+            return
+        now = time.time()
+        if now - self._last_catchup_attempt < REPLAY_COOLDOWN_SEC:
+            return
+        if not self.nc:
+            return
+        self._last_catchup_attempt = now
+        self._catchup_task = asyncio.create_task(self._catchup_from_primary())
+
+    async def _catchup_from_primary(self):
+        t0 = time.perf_counter()
+        replayed = 0
+        start_idx = self.last_index + 1
+        try:
+            for _ in range(500):  # up to 100,000 blocks per catch-up cycle
+                req_from = self.last_index + 1
+                req_payload = json.dumps({"from_index": req_from, "limit": REPLAY_BATCH_SIZE}).encode("utf-8")
+                try:
+                    resp_msg = await self.nc.request(WITNESS_REPLAY_TOPIC, req_payload, timeout=REPLAY_TIMEOUT_SEC)
+                except Exception as e:
+                    logger.warning(f"[REPLAY] RPC request failed from #{req_from}: {e}")
+                    break
+
+                resp = json.loads(resp_msg.data.decode("utf-8"))
+                if not resp.get("ok"):
+                    logger.warning(f"[REPLAY] Primary returned error: {resp.get('error')}")
+                    break
+
+                blocks = resp.get("blocks", [])
+                head_index = int(resp.get("head_index", self.last_index))
+                if head_index > self._catchup_target_index:
+                    self._catchup_target_index = head_index
+                if not blocks:
+                    break
+
+                progressed = False
+                for blk in blocks:
+                    ok = await self.process_block(blk, from_replay=True)
+                    if ok:
+                        replayed += 1
+                        self._total_replayed += 1
+                        progressed = True
+                    elif self.desynchronized and int(blk.get("index", 0)) == self.last_index + 1:
+                        # Cryptographic divergence during replay — abort immediately
+                        return
+
+                if not progressed:
+                    break
+                if not resp.get("has_more") and self.last_index >= self._catchup_target_index:
+                    break
+
+            # Drain any live buffered blocks now consecutive with head & prune stale entries
+            for stale_idx in [k for k in self.reorder_buffer.keys() if k <= self.last_index]:
+                self.reorder_buffer.pop(stale_idx, None)
+            while (self.last_index + 1) in self.reorder_buffer:
+                next_idx = self.last_index + 1
+                next_block = self.reorder_buffer.pop(next_idx)
+                await self.process_block(next_block, from_replay=True)
+
+            if replayed > 0:
+                elapsed = time.perf_counter() - t0
+                logger.info(
+                    f"[OK] Auto-catchup replayed {replayed} blocks (#{start_idx:,} -> #{self.last_index:,}) "
+                    f"in {elapsed:.2f}s (Zero Divergence)."
+                )
+        except Exception as e:
+            logger.error(f"[REPLAY] Unexpected catch-up failure: {e}")
+
+    async def process_block(self, block: Dict[str, Any], from_replay: bool = False) -> bool:
         idx = block.get("index", 0)
         ts = block.get("timestamp")
         topic = block.get("topic", "")
@@ -191,18 +273,24 @@ class KShieldWitness:
                 return False
             return True
 
-        # Case 2: Out of order block within reorder window
+        # Case 2: Out of order block or sequence gap — buffer live tail and trigger automatic replay catch-up
         if idx > expected_index:
-            if idx <= expected_index + REORDER_WINDOW_MAX:
+            if len(self.reorder_buffer) < REORDER_CATCHUP_MAX:
                 self.reorder_buffer[idx] = block
+            if not from_replay:
+                self._schedule_catchup(idx)
+            if idx <= expected_index + REORDER_WINDOW_MAX:
                 if not self.desynchronized:
-                    logger.debug(f"Buffering out-of-order block #{idx} (expected #{expected_index}). Buffer size: {len(self.reorder_buffer)}")
+                    logger.debug(
+                        f"Buffering out-of-order block #{idx} (expected #{expected_index}). Buffer size: {len(self.reorder_buffer)}"
+                    )
                 return False
             else:
-                # Sequence gap exceeds buffer window
-                if not self.desynchronized:
+                # Large gap: allow active catch-up to heal; alert if catch-up is not running
+                catchup_active = self._catchup_task is not None and not self._catchup_task.done()
+                if not catchup_active and not self.desynchronized:
                     self.desynchronized = True
-                    err_msg = f"[ALERT] SEQUENCE GAP: Expected index {expected_index}, received {idx} (> window {REORDER_WINDOW_MAX})! Awaiting baseline sync."
+                    err_msg = f"[ALERT] SEQUENCE GAP: Expected index {expected_index}, received {idx} (> window {REORDER_WINDOW_MAX})! Replay catch-up unavailable."
                     logger.error(err_msg)
                     await self._emit_alert("CRITICAL", "SEQUENCE_GAP", err_msg)
                     self._write_status("DESYNCHRONIZED")
@@ -276,8 +364,17 @@ async def main():
 
     from nats.aio.client import Client as NATS
     nc = NATS()
+    async def on_reconnected():
+        logger.info("Reconnected to NATS cluster fabric; triggering catch-up check.")
+        witness._schedule_catchup(witness.last_index + 1)
+
     logger.info(f"Connecting to NATS cluster at {NATS_URL}...")
-    await nc.connect(NATS_URL)
+    await nc.connect(
+        NATS_URL,
+        reconnect_time_wait=2,
+        max_reconnect_attempts=-1,
+        reconnected_cb=on_reconnected,
+    )
     witness.nc = nc
     logger.info("Connected to NATS cluster fabric.")
 
@@ -289,7 +386,7 @@ async def main():
             logger.error(f"Error processing witness block: {e}")
 
     await nc.subscribe(WITNESS_BLOCK_TOPIC, cb=block_callback)
-    logger.info(f"Subscribed to '{WITNESS_BLOCK_TOPIC}' (Synchronous Block Ingestion).")
+    logger.info(f"Subscribed to '{WITNESS_BLOCK_TOPIC}' (Synchronous Block Ingestion + Replay '{WITNESS_REPLAY_TOPIC}').")
 
     async def heartbeat_callback(msg):
         witness.last_heartbeat_time = time.time()
